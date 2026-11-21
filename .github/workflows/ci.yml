@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-go:
+    name: Go Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux WebKit / tray dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify layer boundary (only core/ imports zju-connect)
+        shell: bash
+        run: |
+          BAD=$(go list -f '{{.ImportPath}} {{.Imports}}' ./app/... ./cmd/... | grep 'github.com/mythologyli/zju-connect' || true)
+          if [ -n "$BAD" ]; then
+            echo "Layer boundary violated! Non-core package imports zju-connect:"
+            echo "$BAD"
+            exit 1
+          fi
+
+      - name: Run Go tests with race detector
+        run: go test -race -v ./...
+
+      - name: Run M0 headless probe (3 cycles)
+        run: go run ./cmd/probe --mock --cycles 3
+
+      - name: Run mygo vet
+        run: go tool mygo vet
+
+  build-frontend:
+    name: Frontend Typecheck & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm --prefix frontend ci
+      - run: npm --prefix frontend run build

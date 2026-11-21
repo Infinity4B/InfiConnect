@@ -1,0 +1,24 @@
+{
+  "name": "InfiConnect",
+  "slug": "inficonnect",
+  "identifier": "dev.inficonnect.app",
+  "version": "0.1.0",
+  "copyright": "© 2026 InfiConnect Contributors",
+  "license": "AGPL-3.0-only",
+  "icon": "resources/icon.png",
+  "main": "./cmd/inficonnect",
+  "devUrl": "http://localhost:5173",
+  "devCommand": "npm --prefix frontend run dev",
+  "buildCommand": "npm --prefix frontend run build",
+  "frontendDist": "frontend/dist",
+  "bindings": "frontend/src/mygo.ts",
+  "out": "build",
+  "macos": {
+    "minimumSystemVersion": "12.0"
+  },
+  "linux": {
+    "comment": "Cross-platform EasyConnect & aTrust VPN desktop client",
+    "categories": ["Network", "Utility"],
+    "command": "inficonnect"
+  }
+}
