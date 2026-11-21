@@ -459,3 +459,47 @@ proxy_all = true
 		}
 	}
 }
+
+func TestSelectATrustAuthInfo_AutoDetection(t *testing.T) {
+	serverChoices := []core.ATrustAuthChoice{
+		{LoginDomain: "AD", AuthType: "auth/psw", AuthName: "AD 账号"},
+		{LoginDomain: "local", AuthType: "auth/psw", AuthName: "本地账号", SubType: "default"},
+		{LoginDomain: "cas_sso", AuthType: "auth/cas", AuthName: "统一身份认证"},
+	}
+
+	// Legacy default "Radius" auto-falls back to server default when server doesn't have Radius.
+	got, err := core.SelectATrustAuthInfo(serverChoices, core.ATrustAuthAuto, "Radius", true, false)
+	if err != nil {
+		t.Fatalf("auto fallback from Radius: %v", err)
+	}
+	if got.AuthType != "auth/psw" || got.LoginDomain != "local" {
+		t.Fatalf("got %+v, want auth/psw@local", got)
+	}
+
+	// Blank domain + Auto picks server default.
+	got, err = core.SelectATrustAuthInfo(serverChoices, core.ATrustAuthAuto, "", true, false)
+	if err != nil || got.LoginDomain != "local" {
+		t.Fatalf("blank auto = %+v, %v; want local", got, err)
+	}
+
+	// Case-insensitive match on explicit domain.
+	got, err = core.SelectATrustAuthInfo(serverChoices, core.ATrustAuthPassword, "ad", true, false)
+	if err != nil || got.LoginDomain != "AD" {
+		t.Fatalf("case-insensitive AD = %+v, %v", got, err)
+	}
+
+	// Server with only CAS falls back to CAS when Auto is selected.
+	casOnly := []core.ATrustAuthChoice{
+		{LoginDomain: "sso", AuthType: "auth/cas", AuthName: "SSO", SubType: "default"},
+	}
+	got, err = core.SelectATrustAuthInfo(casOnly, core.ATrustAuthAuto, "Radius", true, false)
+	if err != nil || got.AuthType != "auth/cas" || got.LoginDomain != "sso" {
+		t.Fatalf("cas-only fallback = %+v, %v", got, err)
+	}
+
+	// Explicit nonexistent custom domain surfaces available choices in error.
+	_, err = core.SelectATrustAuthInfo(serverChoices, core.ATrustAuthPassword, "nonexistent", true, false)
+	if err == nil || !strings.Contains(err.Error(), "auth/psw@local") {
+		t.Fatalf("expected descriptive error listing available methods, got: %v", err)
+	}
+}

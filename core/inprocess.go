@@ -874,12 +874,52 @@ func buildZJUConnectSession(
 
 		var loginMethod auth.LoginMethod
 		if profile.SID == "" || profile.DeviceID == "" {
+			resolvedType := profile.AuthType
+			resolvedDomain := strings.TrimSpace(profile.LoginDomain)
+
+			authServerHost := profile.ServerAddress
+			if profile.ServerPort > 0 && profile.ServerPort != 443 {
+				authServerHost = fmt.Sprintf("%s:%d", profile.ServerAddress, profile.ServerPort)
+			}
+			probeSess := auth.NewSessionContext(ctx, authServerHost, nil, underlayDialer.DialContext)
+			if authList, probeErr := probeSess.GetAuthInfoList(); probeErr == nil && len(authList) > 0 {
+				choices := make([]ATrustAuthChoice, 0, len(authList))
+				for _, a := range authList {
+					choices = append(choices, ATrustAuthChoice{
+						LoginDomain: a.LoginDomain,
+						AuthType:    a.AuthType,
+						AuthName:    a.AuthName,
+						SubType:     a.SubType,
+					})
+				}
+				logFn(LogDebug, "atrust", fmt.Sprintf("Server auth methods: %s", formatATrustAuthChoices(choices)))
+
+				selected, selErr := SelectATrustAuthInfo(
+					choices,
+					resolvedType,
+					resolvedDomain,
+					profile.Username != "" && profile.Password != "",
+					profile.Phone != "",
+				)
+				if selErr != nil {
+					_ = underlayDialer.Close()
+					return nil, fmt.Errorf("atrust setup: %w", selErr)
+				}
+				if string(resolvedType) != selected.AuthType || resolvedDomain != selected.LoginDomain {
+					logFn(LogInfo, "atrust", fmt.Sprintf("Auto-selected aTrust login method: %s @ %s (%s)", selected.AuthType, selected.LoginDomain, selected.AuthName))
+				}
+				resolvedType = ATrustAuthType(selected.AuthType)
+				resolvedDomain = selected.LoginDomain
+			} else if probeErr != nil {
+				logFn(LogDebug, "atrust", fmt.Sprintf("Skipped aTrust auth method probe: %v", probeErr))
+			}
+
 			loginMethod, err = auth.NewLoginMethod(auth.LoginMethodOptions{
-				AuthType:   string(profile.AuthType),
+				AuthType:   string(resolvedType),
 				Username:   profile.Username,
 				Password:   profile.Password,
 				Phone:      profile.Phone,
-				Domain:     profile.LoginDomain,
+				Domain:     resolvedDomain,
 				CASTicket:  profile.CASTicket,
 				OAuth2Code: profile.OAuth2Code,
 			})

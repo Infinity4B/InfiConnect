@@ -91,6 +91,16 @@ export interface DomainResourceItem {
 /** ExternalLoginKind identifies an external browser login subtype. */
 export type ExternalLoginKind = "cas" | "oauth2";
 
+/** HelperStatus describes the state of the macOS privileged Split-TUN helper daemon. */
+export interface HelperStatus {
+  supported: boolean;
+  installed: boolean;
+  running: boolean;
+  needsUpdate?: boolean;
+  version?: number;
+  message?: string;
+}
+
 /** IPResourceItem represents an IP range pushed by the VPN server. */
 export interface IPResourceItem {
   ipMin: string;
@@ -315,10 +325,14 @@ export const AppService = {
   getStatus: bind<[], StatusSnapshot>("AppService.GetStatus", () => []),
   /** GetSystemProxyState returns the current OS system proxy configuration state. */
   getSystemProxyState: bind<[], SysproxyState>("AppService.GetSystemProxyState", () => []),
+  /** GetTUNHelperStatus reports whether the macOS privileged Split-TUN helper daemon is installed and running. */
+  getTUNHelperStatus: bind<[], HelperStatus>("AppService.GetTUNHelperStatus", () => []),
   /** ImportTOML parses raw ZJU-Connect TOML configuration text and saves it as a new profile. */
   importTOML: bind<[string, string], Profile>("AppService.ImportTOML", (tomlText: string, profileName: string) => [tomlText, profileName]),
   /** ImportTOMLFile opens a native file picker to import a ZJU-Connect TOML config file. */
   importTOMLFile: bind<[], Profile | null>("AppService.ImportTOMLFile", () => []),
+  /** InstallTUNHelper installs or updates the macOS privileged Split-TUN helper daemon (one-time admin prompt). */
+  installTUNHelper: bind<[], HelperStatus>("AppService.InstallTUNHelper", () => []),
   /** InstallUpdate downloads, verifies, installs the pending update, and relaunches the app. */
   installUpdate: bind<[], void>("AppService.InstallUpdate", () => []),
   /** ListProfiles returns all saved connection profiles (with secrets stripped) and the active profile ID. */
@@ -337,6 +351,8 @@ export const AppService = {
   setSystemProxy: bind<[boolean], SysproxyState>("AppService.SetSystemProxy", (enabled: boolean) => [enabled]),
   /** SubmitChallenge submits the user's answer for a pending interactive authentication challenge. */
   submitChallenge: bind<[ChallengeAnswer], void>("AppService.SubmitChallenge", (answer: ChallengeAnswer) => [answer]),
+  /** UninstallTUNHelper removes the macOS privileged Split-TUN helper daemon. */
+  uninstallTUNHelper: bind<[], HelperStatus>("AppService.UninstallTUNHelper", () => []),
 } as const;
 
 // ---- Events ----

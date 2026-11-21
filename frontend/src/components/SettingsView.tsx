@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { DownloadCloud, Info, RefreshCw, Save, Shield } from "lucide-react";
+import { DownloadCloud, Info, RefreshCw, Save, Shield, ShieldCheck, Trash2 } from "lucide-react";
 import {
   AppService,
   type AppInfo,
   type AppSettings,
+  type HelperStatus,
   type UpdateCheckResult,
 } from "../mygo";
 import { type Dict, fmt } from "../i18n";
@@ -28,10 +29,46 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateCheckResult | null>(null);
+  const [helperStatus, setHelperStatus] = useState<HelperStatus | null>(null);
+  const [helperBusy, setHelperBusy] = useState(false);
 
   useEffect(() => {
     setDraft(settings);
   }, [settings]);
+
+  useEffect(() => {
+    AppService.getTUNHelperStatus()
+      .then(setHelperStatus)
+      .catch(() => {});
+  }, []);
+
+  const handleInstallHelper = async () => {
+    if (helperBusy) return;
+    setHelperBusy(true);
+    try {
+      const st = await AppService.installTUNHelper();
+      setHelperStatus(st);
+      onNotify(dict.settings.tunHelperInstalledToast, "success");
+    } catch (err) {
+      onNotify(String(err), "error");
+    } finally {
+      setHelperBusy(false);
+    }
+  };
+
+  const handleUninstallHelper = async () => {
+    if (helperBusy) return;
+    setHelperBusy(true);
+    try {
+      const st = await AppService.uninstallTUNHelper();
+      setHelperStatus(st);
+      onNotify(dict.settings.tunHelperUninstalledToast, "success");
+    } catch (err) {
+      onNotify(String(err), "error");
+    } finally {
+      setHelperBusy(false);
+    }
+  };
 
   const handleSave = async (e?: React.FormEvent) => {
     e?.preventDefault();
@@ -269,6 +306,61 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <span className="switch-thumb" />
           </button>
         </div>
+
+        {helperStatus?.supported && (
+          <div className="toggle-row" style={{ alignItems: "center", gap: 12 }}>
+            <div>
+              <div
+                className="toggle-row-title"
+                style={{ display: "flex", alignItems: "center", gap: 8 }}
+              >
+                <span>{dict.settings.tunHelperTitle}</span>
+                <span
+                  className={`badge ${
+                    helperStatus.needsUpdate
+                      ? "badge-warning"
+                      : helperStatus.running
+                        ? "badge-success"
+                        : "badge-neutral"
+                  }`}
+                >
+                  {helperStatus.needsUpdate
+                    ? dict.settings.tunHelperNeedsUpdate
+                    : helperStatus.running
+                      ? dict.settings.tunHelperRunning
+                      : dict.settings.tunHelperNotInstalled}
+                </span>
+              </div>
+              <div className="toggle-row-desc">{dict.settings.tunHelperDesc}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <button
+                type="button"
+                className={`btn btn-sm ${!helperStatus.running || helperStatus.needsUpdate ? "btn-primary" : ""}`}
+                disabled={helperBusy}
+                onClick={handleInstallHelper}
+              >
+                <ShieldCheck size={13} />
+                {helperStatus.needsUpdate
+                  ? dict.settings.tunHelperUpdate
+                  : helperStatus.installed
+                    ? dict.settings.tunHelperReinstall
+                    : dict.settings.tunHelperInstall}
+              </button>
+              {helperStatus.installed && (
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger"
+                  disabled={helperBusy}
+                  onClick={handleUninstallHelper}
+                >
+                  <Trash2 size={13} />
+                  {dict.settings.tunHelperUninstall}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Updates & About */}

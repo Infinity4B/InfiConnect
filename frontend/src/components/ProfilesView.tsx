@@ -51,7 +51,7 @@ function createEmptyProfile(settings: AppSettings): Profile {
     secondaryDnsServer: settings.defaultSecondaryDns || "auto",
     dnsTtl: 3600,
     autoReconnect: settings.autoReconnect,
-    loginDomain: "Radius",
+    loginDomain: "",
     updateBestNodesInterval: 300,
     sessionRefreshInterval: 1800,
     customProxyDomains: [],
@@ -687,6 +687,7 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
                         </label>
                         <input
                           className="input"
+                          placeholder={dict.profiles.loginDomainPlaceholder}
                           value={editing.loginDomain || ""}
                           onChange={(e) =>
                             setEditing({ ...editing, loginDomain: e.target.value })

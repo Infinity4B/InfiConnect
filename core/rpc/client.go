@@ -299,7 +299,8 @@ func (e *SubprocessEngine) supervise(ctx context.Context, done chan struct{}, w 
 			}
 			e.emitLog(core.LogWarn, "supervisor", reason)
 
-			if !profile.AutoReconnect || !wasConnected || cur.elevated {
+			canRespawnElevated := !cur.elevated || isHelperDaemonReady()
+			if !profile.AutoReconnect || !wasConnected || !canRespawnElevated {
 				e.mu.Lock()
 				e.status.State = core.StateError
 				e.status.LastError = reason
@@ -339,7 +340,7 @@ func (e *SubprocessEngine) supervise(ctx context.Context, done chan struct{}, w 
 			case <-timer.C:
 			}
 
-			nextW, err := e.spawnWorker(false)
+			nextW, err := e.spawnWorker(cur.elevated)
 			if err != nil {
 				e.emitLog(core.LogError, "supervisor", fmt.Sprintf("Failed to respawn core worker: %v", err))
 				continue

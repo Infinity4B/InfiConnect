@@ -127,9 +127,6 @@ func (p *Profile) ApplyDefaults() {
 		p.SecondaryDNSServer = "auto"
 	}
 	if p.Protocol == ProtocolATrust {
-		if p.LoginDomain == "" {
-			p.LoginDomain = "Radius"
-		}
 		if p.UpdateBestNodesInterval <= 0 {
 			p.UpdateBestNodesInterval = 300
 		}

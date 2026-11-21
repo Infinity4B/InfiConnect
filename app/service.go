@@ -14,6 +14,7 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/inficonnect/inficonnect/app/sysproxy"
 	"github.com/inficonnect/inficonnect/core"
+	"github.com/inficonnect/inficonnect/core/rpc"
 )
 
 const maxLogBuffer = 2000
@@ -498,6 +499,27 @@ func (s *AppService) InstallUpdate(ctx context.Context) error {
 func (s *AppService) CopyText(text string) error {
 	mygo.Clipboard.WriteText(text)
 	return nil
+}
+
+// GetTUNHelperStatus reports whether the macOS privileged Split-TUN helper daemon is installed and running.
+func (s *AppService) GetTUNHelperStatus() rpc.HelperStatus {
+	return rpc.GetHelperStatus()
+}
+
+// InstallTUNHelper installs or updates the macOS privileged Split-TUN helper daemon (one-time admin prompt).
+func (s *AppService) InstallTUNHelper() (rpc.HelperStatus, error) {
+	if err := rpc.InstallPrivilegedHelper(""); err != nil {
+		return rpc.GetHelperStatus(), err
+	}
+	return rpc.GetHelperStatus(), nil
+}
+
+// UninstallTUNHelper removes the macOS privileged Split-TUN helper daemon.
+func (s *AppService) UninstallTUNHelper() (rpc.HelperStatus, error) {
+	if err := rpc.UninstallPrivilegedHelper(); err != nil {
+		return rpc.GetHelperStatus(), err
+	}
+	return rpc.GetHelperStatus(), nil
 }
 
 func applyTheme(theme string) {

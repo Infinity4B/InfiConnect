@@ -98,7 +98,11 @@ func OpenStore(dir string, secrets SecretStore) (*Store, error) {
 		return nil, fmt.Errorf("create config dir: %w", err)
 	}
 	if secrets == nil {
-		secrets = newMyGoSecretStore()
+		vault, err := OpenFileSecretStore(dir)
+		if err != nil {
+			return nil, fmt.Errorf("open encrypted secret vault: %w", err)
+		}
+		secrets = NewMigratingSecretStore(vault, newMyGoSecretStore())
 	}
 
 	s := &Store{
@@ -312,7 +316,7 @@ func (s *Store) updateSecret(profileID, field, newVal string, clear bool, flag *
 	}
 	if newVal != "" {
 		if err := s.secrets.Set(key, []byte(newVal)); err != nil {
-			return fmt.Errorf("store %s secret in system keychain: %w", field, err)
+			return fmt.Errorf("store %s secret in encrypted vault: %w", field, err)
 		}
 		*flag = true
 	}
@@ -432,6 +436,12 @@ func (s *Store) SensitiveLiterals() []string {
 			out = append(out, p.DeviceID)
 		}
 	}
+	type localLister interface {
+		LocalValues() []string
+	}
+	if l, ok := s.secrets.(localLister); ok {
+		out = append(out, l.LocalValues()...)
+	}
 	return out
 }
 
@@ -484,5 +494,13 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := os.WriteFile(tmp, data, perm); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Chmod(tmp, perm); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
