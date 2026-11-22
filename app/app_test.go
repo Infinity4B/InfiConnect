@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -133,14 +134,16 @@ func TestFileSecretStore_EncryptedPersistence(t *testing.T) {
 		}
 	}
 
-	// Verify 0600 file modes for vault and key.
-	for _, fname := range []string{"secrets.vault", ".vault.key"} {
-		info, err := os.Stat(filepath.Join(dir, fname))
-		if err != nil {
-			t.Fatalf("stat %s: %v", fname, err)
-		}
-		if perm := info.Mode().Perm(); perm != 0o600 {
-			t.Fatalf("%s permissions = %o, want 0600", fname, perm)
+	// Verify 0600 file modes for vault and key on POSIX platforms (Windows does not store POSIX mode bits).
+	if runtime.GOOS != "windows" {
+		for _, fname := range []string{"secrets.vault", ".vault.key"} {
+			info, err := os.Stat(filepath.Join(dir, fname))
+			if err != nil {
+				t.Fatalf("stat %s: %v", fname, err)
+			}
+			if perm := info.Mode().Perm(); perm != 0o600 {
+				t.Fatalf("%s permissions = %o, want 0600", fname, perm)
+			}
 		}
 	}
 
