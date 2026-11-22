@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   Compass,
@@ -13,24 +13,34 @@ import {
   AppService,
   type ResourceSnapshot,
   type RouteCheckResult,
+  type StatusSnapshot,
 } from "../mygo";
 import type { Dict } from "../i18n";
 
 interface ResourcesViewProps {
-  resources: ResourceSnapshot;
-  isConnected: boolean;
+  connectedSessions: StatusSnapshot[];
+  resourcesByProfile: Record<string, ResourceSnapshot>;
   dict: Dict;
   onNotify: (msg: string, kind?: "success" | "error") => void;
 }
 
 type ResourceTab = "ip" | "domain" | "dns";
 
+const EMPTY_RESOURCES: ResourceSnapshot = {
+  ipResources: [],
+  domainResources: [],
+  dnsOverrides: [],
+  proxyAll: false,
+};
+
 export const ResourcesView: React.FC<ResourcesViewProps> = ({
-  resources,
-  isConnected,
+  connectedSessions,
+  resourcesByProfile,
   dict,
   onNotify,
 }) => {
+  const [selectedProfileId, setSelectedProfileId] = useState<string>("");
+  const [routeScope, setRouteScope] = useState<string>(""); // "" = all connected VPNs
   const [tab, setTab] = useState<ResourceTab>("ip");
   const [query, setQuery] = useState("");
   const [routeTarget, setRouteTarget] = useState("");
@@ -38,6 +48,38 @@ export const ResourcesView: React.FC<ResourcesViewProps> = ({
   const [routeProto, setRouteProto] = useState("tcp");
   const [routeResult, setRouteResult] = useState<RouteCheckResult | null>(null);
   const [checking, setChecking] = useState(false);
+
+  const isConnected = connectedSessions.length > 0;
+
+  useEffect(() => {
+    if (connectedSessions.length === 0) {
+      setSelectedProfileId("");
+      setRouteScope("");
+      return;
+    }
+    setSelectedProfileId((prev) => {
+      if (prev && connectedSessions.some((s) => s.profileId === prev)) {
+        return prev;
+      }
+      return connectedSessions[0].profileId || "";
+    });
+    setRouteScope((prev) => {
+      if (prev === "") return "";
+      if (connectedSessions.some((s) => s.profileId === prev)) return prev;
+      return "";
+    });
+  }, [connectedSessions]);
+
+  const resources = useMemo(() => {
+    if (selectedProfileId && resourcesByProfile[selectedProfileId]) {
+      return resourcesByProfile[selectedProfileId];
+    }
+    const first = connectedSessions[0]?.profileId;
+    if (first && resourcesByProfile[first]) {
+      return resourcesByProfile[first];
+    }
+    return EMPTY_RESOURCES;
+  }, [selectedProfileId, connectedSessions, resourcesByProfile]);
 
   const q = query.trim().toLowerCase();
 
@@ -79,6 +121,7 @@ export const ResourcesView: React.FC<ResourcesViewProps> = ({
     setChecking(true);
     try {
       const res = await AppService.checkRoute(
+        routeScope,
         routeTarget.trim(),
         Number(routePort) || 443,
         routeProto,
@@ -93,6 +136,41 @@ export const ResourcesView: React.FC<ResourcesViewProps> = ({
 
   return (
     <div className="page-stack">
+      {/* Connection Switcher when multiple VPNs are connected */}
+      {connectedSessions.length > 1 && (
+        <div
+          className="card"
+          style={{
+            padding: "12px 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text-secondary)" }}>
+            {dict.resources.selectConnection}
+          </span>
+          <div className="tabs">
+            {connectedSessions.map((s) => {
+              const pid = s.profileId || "";
+              return (
+                <button
+                  key={pid}
+                  type="button"
+                  className={`tab-btn ${selectedProfileId === pid ? "active" : ""}`}
+                  onClick={() => setSelectedProfileId(pid)}
+                >
+                  {s.profileName || pid}
+                  {s.virtualIp ? ` (${s.virtualIp})` : ""}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Summary Stats */}
       <div className="grid-3">
         <div className="stat-tile">
@@ -136,6 +214,21 @@ export const ResourcesView: React.FC<ResourcesViewProps> = ({
             </h3>
             <p className="card-subtitle">{dict.resources.routeCheckerDesc}</p>
           </div>
+          {connectedSessions.length > 1 && (
+            <select
+              className="select"
+              style={{ width: "auto", minWidth: 170 }}
+              value={routeScope}
+              onChange={(e) => setRouteScope(e.target.value)}
+            >
+              <option value="">{dict.resources.routeScopeAll}</option>
+              {connectedSessions.map((s) => (
+                <option key={s.profileId} value={s.profileId}>
+                  {s.profileName || s.profileId}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
 
         <form
@@ -193,7 +286,7 @@ export const ResourcesView: React.FC<ResourcesViewProps> = ({
               flexWrap: "wrap",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <span
                 className={`badge ${routeResult.viaVpn ? "badge-success" : "badge-neutral"}`}
               >
@@ -206,6 +299,9 @@ export const ResourcesView: React.FC<ResourcesViewProps> = ({
                   ? dict.resources.viaVpn
                   : dict.resources.viaDirect}
               </span>
+              {routeResult.viaVpn && routeResult.profileName && (
+                <span className="badge badge-accent">{routeResult.profileName}</span>
+              )}
               <span className="mono" style={{ fontWeight: 600 }}>
                 {routeResult.host}:{routeResult.port} ({routeResult.network.toUpperCase()})
               </span>

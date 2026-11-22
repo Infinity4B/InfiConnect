@@ -65,13 +65,14 @@ func (tc *TrayController) Refresh() {
 		return
 	}
 
-	status := tc.svc.GetStatus()
-	icon := tc.icons[status.State]
+	sessions := tc.svc.GetSessions()
+	aggState := aggregateTrayState(sessions)
+	icon := tc.icons[aggState]
 	if icon == nil {
 		icon = tc.icons[core.StateIdle]
 	}
 	_ = tray.SetIcon(icon, false)
-	tray.SetToolTip(formatTrayTooltip(status))
+	tray.SetToolTip(formatTrayTooltip(sessions))
 	tray.SetMenu(tc.buildMenu())
 }
 
@@ -85,97 +86,195 @@ func (tc *TrayController) Destroy() {
 	}
 }
 
+func aggregateTrayState(sessions []core.StatusSnapshot) core.State {
+	hasBusy := false
+	hasErr := false
+	for _, s := range sessions {
+		if s.State == core.StateConnected {
+			return core.StateConnected
+		}
+		if s.State == core.StateConnecting || s.State == core.StateAuthenticating || s.State == core.StateReconnecting || s.State == core.StateDisconnecting {
+			hasBusy = true
+		}
+		if s.State == core.StateError {
+			hasErr = true
+		}
+	}
+	if hasBusy {
+		return core.StateConnecting
+	}
+	if hasErr {
+		return core.StateError
+	}
+	return core.StateIdle
+}
+
+func isSessionActiveState(st core.State) bool {
+	return st == core.StateConnected ||
+		st == core.StateConnecting ||
+		st == core.StateAuthenticating ||
+		st == core.StateReconnecting ||
+		st == core.StateDisconnecting
+}
+
 func (tc *TrayController) buildMenu() *mygo.Menu {
-	status := tc.svc.GetStatus()
+	sessions := tc.svc.GetSessions()
 	profilesRes := tc.svc.ListProfiles()
 	sysProxy := tc.svc.GetSystemProxyState()
 
-	isActive := status.State == core.StateConnected ||
-		status.State == core.StateConnecting ||
-		status.State == core.StateAuthenticating ||
-		status.State == core.StateReconnecting
-
-	toggleLabel := "Connect"
-	if isActive {
-		toggleLabel = "Disconnect"
-	}
-
-	profileItems := make([]*mygo.MenuItem, 0, len(profilesRes.Profiles))
-	for _, p := range profilesRes.Profiles {
-		profID := p.ID
-		profileItems = append(profileItems, &mygo.MenuItem{
-			Label:   fmt.Sprintf("%s (%s)", p.Name, p.Protocol),
-			Type:    mygo.MenuItemRadio,
-			Checked: profID == profilesRes.ActiveProfileID,
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				go func() {
-					_ = tc.svc.SetActiveProfile(profID)
-					tc.Refresh()
-				}()
-			},
-		})
-	}
-	if len(profileItems) == 0 {
-		profileItems = append(profileItems, &mygo.MenuItem{
-			Label:    "No Profiles Configured",
-			Disabled: true,
-		})
+	sessionByID := make(map[string]core.StatusSnapshot, len(sessions))
+	var connectedSessions []core.StatusSnapshot
+	activeCount := 0
+	for _, s := range sessions {
+		sessionByID[s.ProfileID] = s
+		if isSessionActiveState(s.State) {
+			activeCount++
+		}
+		if s.State == core.StateConnected {
+			connectedSessions = append(connectedSessions, s)
+		}
 	}
 
 	items := []*mygo.MenuItem{
 		{
-			Label:    formatTrayStatusLine(status),
+			Label:    formatTrayStatusLine(sessions),
 			Disabled: true,
-		},
-		mygo.Separator(),
-		{
-			Label: toggleLabel,
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				go func() {
-					if isActive {
-						_ = tc.svc.Disconnect(context.Background())
-					} else {
-						_ = tc.svc.Connect(context.Background(), "")
-					}
-				}()
-			},
-		},
-		{
-			Label:    "System Proxy",
-			Type:     mygo.MenuItemCheckbox,
-			Checked:  sysProxy.Enabled,
-			Disabled: !sysProxy.Supported || status.State != core.StateConnected,
-			Click: func(item *mygo.MenuItem, _ *mygo.Window) {
-				target := item.Checked
-				go func() {
-					_, _ = tc.svc.SetSystemProxy(target)
-				}()
-			},
-		},
-		{
-			Label:   "Switch Profile",
-			Submenu: profileItems,
 		},
 		mygo.Separator(),
 	}
 
-	if status.HTTPAddr != "" {
-		addr := "http://" + status.HTTPAddr
+	// Individual profile toggle items so multiple connections can be started/stopped independently from the tray.
+	if len(profilesRes.Profiles) == 0 {
 		items = append(items, &mygo.MenuItem{
-			Label: "Copy HTTP Proxy (" + status.HTTPAddr + ")",
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				_ = tc.svc.CopyText(addr)
-			},
+			Label:    "No Profiles Configured",
+			Disabled: true,
 		})
+	} else {
+		for _, p := range profilesRes.Profiles {
+			profID := p.ID
+			sess, hasSess := sessionByID[profID]
+			isActive := hasSess && isSessionActiveState(sess.State)
+
+			label := fmt.Sprintf("%s (%s)", p.Name, p.Protocol)
+			if hasSess && sess.State == core.StateConnected && sess.VirtualIP != "" {
+				label = fmt.Sprintf("%s (%s)", p.Name, sess.VirtualIP)
+			} else if hasSess && isActive && sess.State != core.StateConnected {
+				label = fmt.Sprintf("%s — %s", p.Name, sess.State)
+			}
+
+			items = append(items, &mygo.MenuItem{
+				Label:   label,
+				Type:    mygo.MenuItemCheckbox,
+				Checked: isActive,
+				Click: func(*mygo.MenuItem, *mygo.Window) {
+					go func() {
+						if isActive {
+							_ = tc.svc.Disconnect(context.Background(), profID)
+						} else {
+							_ = tc.svc.Connect(context.Background(), profID)
+						}
+					}()
+				},
+			})
+		}
 	}
-	if status.SocksAddr != "" {
-		addr := "socks5://" + status.SocksAddr
-		items = append(items, &mygo.MenuItem{
-			Label: "Copy SOCKS5 Proxy (" + status.SocksAddr + ")",
-			Click: func(*mygo.MenuItem, *mygo.Window) {
-				_ = tc.svc.CopyText(addr)
+
+	if activeCount > 0 {
+		disconnectLabel := "Disconnect"
+		if activeCount > 1 {
+			disconnectLabel = fmt.Sprintf("Disconnect All (%d)", activeCount)
+		}
+		items = append(items,
+			mygo.Separator(),
+			&mygo.MenuItem{
+				Label: disconnectLabel,
+				Click: func(*mygo.MenuItem, *mygo.Window) {
+					go func() {
+						_ = tc.svc.DisconnectAll(context.Background())
+					}()
+				},
 			},
-		})
+		)
+	}
+
+	sysProxyLabel := "System Proxy"
+	if sysProxy.Enabled && sysProxy.ProfileName != "" {
+		sysProxyLabel = fmt.Sprintf("System Proxy (%s)", sysProxy.ProfileName)
+	}
+	items = append(items,
+		mygo.Separator(),
+		&mygo.MenuItem{
+			Label:    sysProxyLabel,
+			Type:     mygo.MenuItemCheckbox,
+			Checked:  sysProxy.Enabled,
+			Disabled: !sysProxy.Supported || len(connectedSessions) == 0,
+			Click: func(item *mygo.MenuItem, _ *mygo.Window) {
+				target := item.Checked
+				targetProfID := ""
+				if target && len(connectedSessions) > 0 {
+					targetProfID = connectedSessions[0].ProfileID
+				}
+				go func() {
+					_, _ = tc.svc.SetSystemProxy(targetProfID, target)
+				}()
+			},
+		},
+	)
+
+	if len(connectedSessions) == 1 {
+		s := connectedSessions[0]
+		if s.HTTPAddr != "" || s.SocksAddr != "" {
+			items = append(items, mygo.Separator())
+		}
+		if s.HTTPAddr != "" {
+			addr := "http://" + s.HTTPAddr
+			items = append(items, &mygo.MenuItem{
+				Label: "Copy HTTP Proxy (" + s.HTTPAddr + ")",
+				Click: func(*mygo.MenuItem, *mygo.Window) {
+					_ = tc.svc.CopyText(addr)
+				},
+			})
+		}
+		if s.SocksAddr != "" {
+			addr := "socks5://" + s.SocksAddr
+			items = append(items, &mygo.MenuItem{
+				Label: "Copy SOCKS5 Proxy (" + s.SocksAddr + ")",
+				Click: func(*mygo.MenuItem, *mygo.Window) {
+					_ = tc.svc.CopyText(addr)
+				},
+			})
+		}
+	} else if len(connectedSessions) > 1 {
+		proxySub := make([]*mygo.MenuItem, 0, len(connectedSessions)*2)
+		for _, s := range connectedSessions {
+			if s.HTTPAddr != "" {
+				addr := "http://" + s.HTTPAddr
+				proxySub = append(proxySub, &mygo.MenuItem{
+					Label: fmt.Sprintf("%s · HTTP (%s)", s.ProfileName, s.HTTPAddr),
+					Click: func(*mygo.MenuItem, *mygo.Window) {
+						_ = tc.svc.CopyText(addr)
+					},
+				})
+			}
+			if s.SocksAddr != "" {
+				addr := "socks5://" + s.SocksAddr
+				proxySub = append(proxySub, &mygo.MenuItem{
+					Label: fmt.Sprintf("%s · SOCKS5 (%s)", s.ProfileName, s.SocksAddr),
+					Click: func(*mygo.MenuItem, *mygo.Window) {
+						_ = tc.svc.CopyText(addr)
+					},
+				})
+			}
+		}
+		if len(proxySub) > 0 {
+			items = append(items,
+				mygo.Separator(),
+				&mygo.MenuItem{
+					Label:   "Copy Local Proxy",
+					Submenu: proxySub,
+				},
+			)
+		}
 	}
 
 	items = append(items,
@@ -203,16 +302,22 @@ func (tc *TrayController) buildMenu() *mygo.Menu {
 	return mygo.NewMenu(items)
 }
 
-func formatTrayTooltip(s core.StatusSnapshot) string {
-	switch s.State {
-	case core.StateConnected:
-		return fmt.Sprintf("InfiConnect — Connected (%s)", s.ProfileName)
+func formatTrayTooltip(sessions []core.StatusSnapshot) string {
+	var connected []core.StatusSnapshot
+	for _, s := range sessions {
+		if s.State == core.StateConnected {
+			connected = append(connected, s)
+		}
+	}
+	if len(connected) == 1 {
+		return fmt.Sprintf("InfiConnect — Connected (%s)", connected[0].ProfileName)
+	}
+	if len(connected) > 1 {
+		return fmt.Sprintf("InfiConnect — %d Connections Active", len(connected))
+	}
+	switch aggregateTrayState(sessions) {
 	case core.StateConnecting:
 		return "InfiConnect — Connecting..."
-	case core.StateAuthenticating:
-		return "InfiConnect — Waiting for Authentication..."
-	case core.StateReconnecting:
-		return fmt.Sprintf("InfiConnect — Reconnecting (#%d)...", s.ReconnectAttempt)
 	case core.StateError:
 		return "InfiConnect — Connection Error"
 	default:
@@ -220,26 +325,38 @@ func formatTrayTooltip(s core.StatusSnapshot) string {
 	}
 }
 
-func formatTrayStatusLine(s core.StatusSnapshot) string {
-	switch s.State {
-	case core.StateConnected:
+func formatTrayStatusLine(sessions []core.StatusSnapshot) string {
+	var connected []core.StatusSnapshot
+	for _, s := range sessions {
+		if s.State == core.StateConnected {
+			connected = append(connected, s)
+		}
+	}
+	if len(connected) == 1 {
+		s := connected[0]
 		if s.VirtualIP != "" {
 			return fmt.Sprintf("Connected • %s (%s)", s.ProfileName, s.VirtualIP)
 		}
 		return fmt.Sprintf("Connected • %s", s.ProfileName)
-	case core.StateConnecting:
-		return "Connecting…"
-	case core.StateAuthenticating:
-		return "Authentication Required…"
-	case core.StateReconnecting:
-		return fmt.Sprintf("Reconnecting (Attempt #%d)…", s.ReconnectAttempt)
-	case core.StateDisconnecting:
-		return "Disconnecting…"
-	case core.StateError:
-		return "Error"
-	default:
-		return "Disconnected"
 	}
+	if len(connected) > 1 {
+		return fmt.Sprintf("Connected • %d active tunnels", len(connected))
+	}
+	for _, s := range sessions {
+		switch s.State {
+		case core.StateConnecting:
+			return fmt.Sprintf("Connecting • %s…", s.ProfileName)
+		case core.StateAuthenticating:
+			return fmt.Sprintf("Auth Required • %s…", s.ProfileName)
+		case core.StateReconnecting:
+			return fmt.Sprintf("Reconnecting • %s (#%d)…", s.ProfileName, s.ReconnectAttempt)
+		case core.StateDisconnecting:
+			return fmt.Sprintf("Disconnecting • %s…", s.ProfileName)
+		case core.StateError:
+			return fmt.Sprintf("Error • %s", s.ProfileName)
+		}
+	}
+	return "Disconnected"
 }
 
 // renderTrayPNG draws an anti-aliased 32x32 status glyph PNG cleanly in pure Go.

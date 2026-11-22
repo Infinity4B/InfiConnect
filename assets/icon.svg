@@ -1,4 +1,106 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#2563eb"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#ffffff">I</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="12%" y1="4%" x2="88%" y2="96%">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="48%" stop-color="#1d4ed8"/>
+      <stop offset="100%" stop-color="#0b1d4e"/>
+    </linearGradient>
+
+    <radialGradient id="topGlow" cx="20%" cy="14%" r="64%">
+      <stop offset="0%" stop-color="#60a5fa" stop-opacity="0.52"/>
+      <stop offset="48%" stop-color="#2563eb" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#1e3a8a" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="botGlow" cx="84%" cy="86%" r="58%">
+      <stop offset="0%" stop-color="#06b6d4" stop-opacity="0.50"/>
+      <stop offset="52%" stop-color="#0284c7" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#0b1d4e" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="shieldFill" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.13"/>
+      <stop offset="55%" stop-color="#93c5fd" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#06b6d4" stop-opacity="0.02"/>
+    </linearGradient>
+
+    <linearGradient id="shieldStroke" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="55%" stop-color="#bae6fd" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.03"/>
+    </linearGradient>
+
+    <linearGradient id="ribbonMain" gradientUnits="userSpaceOnUse" x1="56.29" y1="154.27" x2="455.71" y2="357.73">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="42%" stop-color="#f1f8ff"/>
+      <stop offset="76%" stop-color="#bae6fd"/>
+      <stop offset="100%" stop-color="#38e8ff"/>
+    </linearGradient>
+
+    <linearGradient id="ribbonShade" gradientUnits="userSpaceOnUse" x1="256.00" y1="154.27" x2="256.00" y2="357.73">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0.0"/>
+      <stop offset="100%" stop-color="#0c4a6e" stop-opacity="0.17"/>
+    </linearGradient>
+
+    <linearGradient id="rimGrad" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.44"/>
+      <stop offset="28%" stop-color="#93c5fd" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#020617" stop-opacity="0.24"/>
+    </linearGradient>
+
+    <filter id="ribbonShadow" x="-22%" y="-32%" width="144%" height="180%">
+      <feDropShadow dx="0" dy="9.6" stdDeviation="10.8" flood-color="#041033" flood-opacity="0.46"/>
+      <feDropShadow dx="0" dy="2.4" stdDeviation="3.0" flood-color="#041033" flood-opacity="0.22"/>
+    </filter>
+
+    <filter id="weaveBlur" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8.4"/>
+    </filter>
+
+    <filter id="softGlow" x="-30%" y="-40%" width="160%" height="180%">
+      <feGaussianBlur stdDeviation="16.9"/>
+    </filter>
+    
+
+    <clipPath id="bodyClip">
+      <path d="M 154.32 8.00 L 357.68 8.00 C 416.21 8.00, 441.50 9.49, 472.01 39.99 C 502.51 70.50, 504.00 95.79, 504.00 154.32 L 504.00 357.68 C 504.00 416.21, 502.51 441.50, 472.01 472.01 C 441.50 502.51, 416.21 504.00, 357.68 504.00 L 154.32 504.00 C 95.79 504.00, 70.50 502.51, 39.99 472.01 C 9.49 441.50, 8.00 416.21, 8.00 357.68 L 8.00 154.32 C 8.00 95.79, 9.49 70.50, 39.99 39.99 C 70.50 9.49, 95.79 8.00, 154.32 8.00 Z"/>
+    </clipPath>
+
+    <mask id="underStrandMask">
+      <rect x="0" y="0" width="512" height="512" fill="#000000"/>
+      <path d="M 191.09 326.92 A 78.25 78.25 0 0 0 220.51 303.09 L 291.49 208.91 A 78.25 78.25 0 0 1 320.91 185.08" fill="none" stroke="#ffffff" stroke-width="46.95" stroke-linecap="butt" stroke-linejoin="round"/>
+    </mask>
+
+    <mask id="fullRibbonMask">
+      <rect x="0" y="0" width="512" height="512" fill="#000000"/>
+      <path d="M 220.51 208.91 L 291.49 303.09 A 78.25 78.25 0 1 0 291.49 208.91 L 220.51 303.09 A 78.25 78.25 0 1 1 220.51 208.91 Z" fill="none" stroke="#ffffff" stroke-width="46.95" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+
+  <g>
+    <path d="M 154.32 8.00 L 357.68 8.00 C 416.21 8.00, 441.50 9.49, 472.01 39.99 C 502.51 70.50, 504.00 95.79, 504.00 154.32 L 504.00 357.68 C 504.00 416.21, 502.51 441.50, 472.01 472.01 C 441.50 502.51, 416.21 504.00, 357.68 504.00 L 154.32 504.00 C 95.79 504.00, 70.50 502.51, 39.99 472.01 C 9.49 441.50, 8.00 416.21, 8.00 357.68 L 8.00 154.32 C 8.00 95.79, 9.49 70.50, 39.99 39.99 C 70.50 9.49, 95.79 8.00, 154.32 8.00 Z" fill="url(#bgGrad)"/>
+    <g clip-path="url(#bodyClip)">
+      <rect x="0" y="0" width="512" height="512" fill="url(#topGlow)"/>
+      <rect x="0" y="0" width="512" height="512" fill="url(#botGlow)"/>
+
+      <path d="M 256.00 92.27 C 330.50 92.27, 399.26 119.24, 399.26 176.54 L 399.26 274.30 C 399.26 361.94, 321.90 409.13, 267.46 425.31 C 260.30 429.36, 251.70 429.36, 244.54 425.31 C 190.10 409.13, 112.74 361.94, 112.74 274.30 L 112.74 176.54 C 112.74 119.24, 181.50 92.27, 256.00 92.27 Z" fill="url(#shieldFill)" stroke="url(#shieldStroke)" stroke-width="1.32"/>
+
+      <path d="M 220.51 208.91 L 291.49 303.09 A 78.25 78.25 0 1 0 291.49 208.91 L 220.51 303.09 A 78.25 78.25 0 1 1 220.51 208.91 Z" fill="none" stroke="#38bdf8" stroke-opacity="0.30" stroke-width="53.99" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)"/>
+
+      <g filter="url(#ribbonShadow)">
+        <path d="M 220.51 208.91 L 291.49 303.09 A 78.25 78.25 0 1 0 291.49 208.91 L 220.51 303.09 A 78.25 78.25 0 1 1 220.51 208.91 Z" fill="none" stroke="url(#ribbonMain)" stroke-width="46.95" stroke-linecap="round" stroke-linejoin="round"/>
+
+        <g mask="url(#underStrandMask)">
+          <path d="M 191.09 185.08 A 78.25 78.25 0 0 1 220.51 208.91 L 291.49 303.09 A 78.25 78.25 0 0 0 320.91 326.92" fill="none" stroke="#061742" stroke-opacity="0.62" stroke-width="50.71" stroke-linecap="butt" filter="url(#weaveBlur)"/>
+        </g>
+
+        <path d="M 220.51 208.91 L 291.49 303.09" fill="none" stroke="url(#ribbonMain)" stroke-width="46.95" stroke-linecap="butt"/>
+
+        <rect x="0" y="0" width="512" height="512" fill="url(#ribbonShade)" mask="url(#fullRibbonMask)"/>
+      </g>
+
+      <path d="M 154.81 9.20 L 357.19 9.20 C 415.43 9.20, 440.60 10.68, 470.96 41.04 C 501.32 71.40, 502.80 96.57, 502.80 154.81 L 502.80 357.19 C 502.80 415.43, 501.32 440.60, 470.96 470.96 C 440.60 501.32, 415.43 502.80, 357.19 502.80 L 154.81 502.80 C 96.57 502.80, 71.40 501.32, 41.04 470.96 C 10.68 440.60, 9.20 415.43, 9.20 357.19 L 9.20 154.81 C 9.20 96.57, 10.68 71.40, 41.04 41.04 C 71.40 10.68, 96.57 9.20, 154.81 9.20 Z" fill="none" stroke="url(#rimGrad)" stroke-width="1.81"/>
+    </g>
+  </g>
 </svg>

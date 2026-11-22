@@ -9,7 +9,10 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 )
+
+var helperInstallMu sync.Mutex
 
 func isElevatedProcess() bool {
 	return os.Geteuid() == 0
@@ -23,6 +26,17 @@ func isElevatedProcess() bool {
 // authorization to install the LaunchDaemon, after which all future connections
 // run without prompting for a password.
 func (e *SubprocessEngine) spawnElevatedWorker(bin string) (*workerProc, error) {
+	if isHelperBinaryCurrent(bin) {
+		if w, err := e.connectViaHelperSocket(helperSocketPath, helperTokenPath); err == nil {
+			return w, nil
+		}
+	}
+
+	// Serialize helper installation across concurrent Split-TUN connections so
+	// simultaneous connects never trigger duplicate macOS administrator prompts.
+	helperInstallMu.Lock()
+	defer helperInstallMu.Unlock()
+
 	if isHelperBinaryCurrent(bin) {
 		if w, err := e.connectViaHelperSocket(helperSocketPath, helperTokenPath); err == nil {
 			return w, nil

@@ -1,11 +1,10 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   FolderKanban,
   Globe,
   Power,
   ScrollText,
   Settings,
-  Shield,
 } from "lucide-react";
 import {
   AppService,
@@ -16,6 +15,7 @@ import {
   type LogEntry,
   type Profile,
   type ResourceSnapshot,
+  type State,
   type StatusSnapshot,
   type SysproxyState,
   type TrafficStats,
@@ -37,24 +37,6 @@ interface ToastItem {
   kind?: "success" | "error";
 }
 
-const DEFAULT_STATUS: StatusSnapshot = {
-  state: "idle",
-  traffic: {
-    bytesSent: 0,
-    bytesRecv: 0,
-    rateSent: 0,
-    rateRecv: 0,
-    activeConns: 0,
-  },
-};
-
-const DEFAULT_RESOURCES: ResourceSnapshot = {
-  ipResources: [],
-  domainResources: [],
-  dnsOverrides: [],
-  proxyAll: false,
-};
-
 const DEFAULT_SETTINGS: AppSettings = {
   defaultSocksBind: "127.0.0.1:1080",
   defaultHttpBind: "127.0.0.1:1081",
@@ -72,22 +54,40 @@ const DEFAULT_SETTINGS: AppSettings = {
 const MAX_SAMPLES = 45;
 const MAX_LOGS = 2000;
 
+function isBusyState(st: State): boolean {
+  return (
+    st === "connecting" ||
+    st === "authenticating" ||
+    st === "reconnecting" ||
+    st === "disconnecting"
+  );
+}
+
 export const App: React.FC = () => {
   const [page, setPage] = useState<PageKey>("connect");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
-  const [status, setStatus] = useState<StatusSnapshot>(DEFAULT_STATUS);
-  const [traffic, setTraffic] = useState<TrafficStats>(DEFAULT_STATUS.traffic);
-  const [samples, setSamples] = useState<TrafficSample[]>([]);
-  const [resources, setResources] = useState<ResourceSnapshot>(DEFAULT_RESOURCES);
+  const [sessionsByProfile, setSessionsByProfile] = useState<
+    Record<string, StatusSnapshot>
+  >({});
+  const [trafficByProfile, setTrafficByProfile] = useState<
+    Record<string, TrafficStats>
+  >({});
+  const [samplesByProfile, setSamplesByProfile] = useState<
+    Record<string, TrafficSample[]>
+  >({});
+  const [resourcesByProfile, setResourcesByProfile] = useState<
+    Record<string, ResourceSnapshot>
+  >({});
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string>("");
+  const [selectedProfileId, setSelectedProfileId] = useState<string>("");
   const [sysproxy, setSysproxy] = useState<SysproxyState>({
     enabled: false,
     supported: true,
   });
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [activeChallenge, setActiveChallenge] = useState<Challenge | null>(null);
+  const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
   const dict = getDict(settings.language);
@@ -105,29 +105,116 @@ export const App: React.FC = () => {
     document.documentElement.setAttribute("data-theme", settings.theme || "system");
   }, [settings.theme]);
 
+  // Keep selectedProfileId valid whenever profiles list updates
+  useEffect(() => {
+    if (profiles.length === 0) {
+      setSelectedProfileId("");
+      return;
+    }
+    setSelectedProfileId((prev) => {
+      if (prev && profiles.some((p) => p.id === prev)) return prev;
+      if (activeProfileId && profiles.some((p) => p.id === activeProfileId)) {
+        return activeProfileId;
+      }
+      return profiles[0].id;
+    });
+  }, [profiles, activeProfileId]);
+
+  const applySessionsList = useCallback((list: StatusSnapshot[]) => {
+    const nextSessions: Record<string, StatusSnapshot> = {};
+    const activeIds = new Set<string>();
+    const activeChallenges: Challenge[] = [];
+
+    for (const st of list || []) {
+      if (!st.profileId || st.state === "idle") continue;
+      nextSessions[st.profileId] = st;
+      activeIds.add(st.profileId);
+      if (st.activeChallenge) {
+        activeChallenges.push(st.activeChallenge);
+      }
+    }
+
+    setSessionsByProfile(nextSessions);
+
+    setTrafficByProfile((prev) => {
+      const next: Record<string, TrafficStats> = {};
+      for (const [pid, st] of Object.entries(nextSessions)) {
+        next[pid] = prev[pid] || st.traffic;
+      }
+      return next;
+    });
+
+    setSamplesByProfile((prev) => {
+      let changed = false;
+      const next: Record<string, TrafficSample[]> = {};
+      for (const pid of Object.keys(prev)) {
+        if (activeIds.has(pid)) {
+          next[pid] = prev[pid];
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    setResourcesByProfile((prev) => {
+      let changed = false;
+      const next: Record<string, ResourceSnapshot> = {};
+      for (const pid of Object.keys(prev)) {
+        if (nextSessions[pid]?.state === "connected") {
+          next[pid] = prev[pid];
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    setChallenges((prev) => {
+      const byId = new Map<string, Challenge>();
+      for (const ch of prev) {
+        if (!ch.profileId || activeIds.has(ch.profileId)) {
+          byId.set(ch.id, ch);
+        }
+      }
+      for (const ch of activeChallenges) {
+        byId.set(ch.id, ch);
+      }
+      return Array.from(byId.values());
+    });
+  }, []);
+
   // Initial hydration + event subscriptions
   useEffect(() => {
     let alive = true;
 
     (async () => {
       try {
-        const [info, st, res, profs, sp, cfg, initialLogs] = await Promise.all([
-          AppService.getAppInfo(),
-          AppService.getStatus(),
-          AppService.getResources(),
-          AppService.listProfiles(),
-          AppService.getSystemProxyState(),
-          AppService.getSettings(),
-          AppService.getLogs("debug", 500),
-        ]);
+        const [info, sessList, allRes, profs, sp, cfg, initialLogs] =
+          await Promise.all([
+            AppService.getAppInfo(),
+            AppService.getSessions(),
+            AppService.getAllResources(),
+            AppService.listProfiles(),
+            AppService.getSystemProxyState(),
+            AppService.getSettings(),
+            AppService.getLogs("debug", 500),
+          ]);
         if (!alive) return;
         setAppInfo(info);
-        setStatus(st);
-        setTraffic(st.traffic);
-        setActiveChallenge(st.activeChallenge || null);
-        setResources(res);
+        applySessionsList(sessList || []);
+
+        const resMap: Record<string, ResourceSnapshot> = {};
+        for (const r of allRes || []) {
+          if (r.profileId) resMap[r.profileId] = r;
+        }
+        setResourcesByProfile(resMap);
+
         setProfiles(profs.profiles || []);
         setActiveProfileId(profs.activeProfileId || "");
+        setSelectedProfileId(
+          profs.activeProfileId || profs.profiles?.[0]?.id || "",
+        );
         setSysproxy(sp);
         setSettings(cfg);
         setLogs(initialLogs || []);
@@ -141,24 +228,64 @@ export const App: React.FC = () => {
     })();
 
     const unsubs = [
+      events.vpnSessions.on((list) => {
+        applySessionsList(list || []);
+      }),
       events.vpnState.on((st) => {
-        setStatus(st);
-        if (st.traffic) setTraffic(st.traffic);
-        if (st.activeChallenge) {
-          setActiveChallenge(st.activeChallenge);
-        } else if (st.state !== "authenticating") {
-          setActiveChallenge(null);
-        }
+        const pid = st.profileId;
+        if (!pid) return;
+
+        setSessionsByProfile((prev) => {
+          const next = { ...prev };
+          if (st.state === "idle") {
+            delete next[pid];
+          } else {
+            next[pid] = st;
+          }
+          return next;
+        });
+
         if (st.state === "idle") {
-          setSamples([]);
-          setResources(DEFAULT_RESOURCES);
+          setTrafficByProfile((prev) => {
+            if (!(pid in prev)) return prev;
+            const next = { ...prev };
+            delete next[pid];
+            return next;
+          });
+          setSamplesByProfile((prev) => {
+            if (!(pid in prev)) return prev;
+            const next = { ...prev };
+            delete next[pid];
+            return next;
+          });
+          setResourcesByProfile((prev) => {
+            if (!(pid in prev)) return prev;
+            const next = { ...prev };
+            delete next[pid];
+            return next;
+          });
+          setChallenges((prev) => prev.filter((c) => c.profileId !== pid));
+        } else {
+          if (st.traffic) {
+            setTrafficByProfile((prev) => ({ ...prev, [pid]: st.traffic }));
+          }
+          if (st.activeChallenge) {
+            const ch = st.activeChallenge;
+            setChallenges((prev) =>
+              prev.some((x) => x.id === ch.id) ? prev : [...prev, ch],
+            );
+          } else if (st.state !== "authenticating") {
+            setChallenges((prev) => prev.filter((c) => c.profileId !== pid));
+          }
         }
       }),
       events.vpnChallenge.on((ch) => {
-        setActiveChallenge(ch);
+        setChallenges((prev) =>
+          prev.some((x) => x.id === ch.id) ? prev : [...prev, ch],
+        );
       }),
       events.vpnChallengeResolved.on((id) => {
-        setActiveChallenge((prev) => (prev && prev.id === id ? null : prev));
+        setChallenges((prev) => prev.filter((c) => c.id !== id));
       }),
       events.vpnLog.on((entry) => {
         setLogs((prev) => {
@@ -167,19 +294,27 @@ export const App: React.FC = () => {
         });
       }),
       events.vpnTraffic.on((stats) => {
-        setTraffic(stats);
-        setSamples((prev) => {
-          const next = [
-            ...prev,
+        const pid = stats.profileId;
+        if (!pid) return;
+        setTrafficByProfile((prev) => ({ ...prev, [pid]: stats }));
+        setSamplesByProfile((prev) => {
+          const existing = prev[pid] || [];
+          const nextArr = [
+            ...existing,
             { rateSent: stats.rateSent, rateRecv: stats.rateRecv },
           ];
-          return next.length > MAX_SAMPLES
-            ? next.slice(next.length - MAX_SAMPLES)
-            : next;
+          return {
+            ...prev,
+            [pid]:
+              nextArr.length > MAX_SAMPLES
+                ? nextArr.slice(nextArr.length - MAX_SAMPLES)
+                : nextArr,
+          };
         });
       }),
       events.vpnResources.on((res) => {
-        setResources(res);
+        if (!res.profileId) return;
+        setResourcesByProfile((prev) => ({ ...prev, [res.profileId!]: res }));
       }),
       events.vpnSysproxy.on((sp) => {
         setSysproxy(sp);
@@ -196,7 +331,7 @@ export const App: React.FC = () => {
         if (typeof unsub === "function") unsub();
       }
     };
-  }, [notify]);
+  }, [notify, applySessionsList]);
 
   const handleImportTomlFile = async () => {
     try {
@@ -211,6 +346,7 @@ export const App: React.FC = () => {
 
   const handleConnectProfile = async (profileId: string) => {
     try {
+      setSelectedProfileId(profileId);
       setPage("connect");
       await AppService.connect(profileId);
     } catch (err) {
@@ -218,26 +354,76 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleDisconnectProfile = async (profileId: string) => {
+    try {
+      await AppService.disconnect(profileId);
+    } catch (err) {
+      notify(String(err), "error");
+    }
+  };
+
+  const sessionList = useMemo(
+    () => Object.values(sessionsByProfile),
+    [sessionsByProfile],
+  );
+  const connectedSessions = useMemo(
+    () => sessionList.filter((s) => s.state === "connected"),
+    [sessionList],
+  );
+  const busySessions = useMemo(
+    () => sessionList.filter((s) => isBusyState(s.state)),
+    [sessionList],
+  );
+  const errorSessions = useMemo(
+    () => sessionList.filter((s) => s.state === "error"),
+    [sessionList],
+  );
+
   const isMac = appInfo?.os === "darwin";
-  const isConnected = status.state === "connected";
-  const isConnectedOrBusy =
-    status.state === "connected" ||
-    status.state === "connecting" ||
-    status.state === "authenticating" ||
-    status.state === "reconnecting" ||
-    status.state === "disconnecting";
+  const connectedCount = connectedSessions.length;
+  const activeCount = connectedCount + busySessions.length;
 
   const statusDotClass =
-    status.state === "connected"
+    connectedCount > 0
       ? "connected"
-      : status.state === "error"
-        ? "error"
-        : status.state !== "idle"
-          ? "busy"
+      : busySessions.length > 0
+        ? "busy"
+        : errorSessions.length > 0
+          ? "error"
           : "";
 
-  const resourceCount =
-    (resources.ipResources?.length || 0) + (resources.domainResources?.length || 0);
+  const sidebarStateText =
+    connectedCount > 1
+      ? fmt(dict.connect.connectedCount, { n: connectedCount })
+      : connectedCount === 1
+        ? dict.state.connected
+        : busySessions.length > 0
+          ? dict.state[busySessions[0].state]
+          : errorSessions.length > 0
+            ? dict.state.error
+            : dict.state.idle;
+
+  const sidebarSubText =
+    connectedCount > 1
+      ? connectedSessions
+          .map((s) => s.profileName || s.virtualIp)
+          .filter(Boolean)
+          .join(" · ")
+      : connectedCount === 1
+        ? connectedSessions[0].virtualIp ||
+          connectedSessions[0].profileName ||
+          `v${appInfo?.version || "0.1.0"}`
+        : busySessions.length > 0
+          ? busySessions[0].profileName || ""
+          : `v${appInfo?.version || "0.1.0"}`;
+
+  const resourceCount = useMemo(() => {
+    let total = 0;
+    for (const res of Object.values(resourcesByProfile)) {
+      total += (res.ipResources?.length || 0) + (res.domainResources?.length || 0);
+    }
+    return total;
+  }, [resourcesByProfile]);
 
   const pageTitle: Record<PageKey, string> = {
     connect: dict.connect.title,
@@ -247,14 +433,57 @@ export const App: React.FC = () => {
     settings: dict.settings.title,
   };
 
+  const activeChallenge = challenges[0] || null;
+
   return (
     <div className="app-shell">
       {/* Sidebar */}
       <aside className={`sidebar ${isMac ? "macos" : ""}`}>
         <div className="titlebar-drag">
           <div className="brand-mark">
-            <div className="brand-logo">
-              <Shield size={13} strokeWidth={2.5} />
+            <div className="brand-logo" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="22" height="22">
+                <defs>
+                  <linearGradient id="icBrandBg" x1="12%" y1="6%" x2="88%" y2="94%">
+                    <stop offset="0%" stopColor="#2563eb" />
+                    <stop offset="55%" stopColor="#1d4ed8" />
+                    <stop offset="100%" stopColor="#0e7490" />
+                  </linearGradient>
+                  <linearGradient id="icBrandRibbon" x1="4" y1="10" x2="28" y2="22" gradientUnits="userSpaceOnUse">
+                    <stop offset="0%" stopColor="#ffffff" />
+                    <stop offset="58%" stopColor="#e0f2fe" />
+                    <stop offset="100%" stopColor="#67e8f9" />
+                  </linearGradient>
+                </defs>
+                <rect width="32" height="32" rx="8" fill="url(#icBrandBg)" />
+                <path
+                  d="M12.75 12.75 L19.25 19.25 A4.6 4.6 0 1 0 19.25 12.75 L12.75 19.25 A4.6 4.6 0 1 1 12.75 12.75 Z"
+                  fill="none"
+                  stroke="url(#icBrandRibbon)"
+                  strokeWidth="2.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <line
+                  x1="13.5"
+                  y1="13.5"
+                  x2="18.5"
+                  y2="18.5"
+                  stroke="#0b1d4e"
+                  strokeOpacity="0.45"
+                  strokeWidth="4.2"
+                  strokeLinecap="butt"
+                />
+                <line
+                  x1="12.75"
+                  y1="12.75"
+                  x2="19.25"
+                  y2="19.25"
+                  stroke="url(#icBrandRibbon)"
+                  strokeWidth="2.9"
+                  strokeLinecap="butt"
+                />
+              </svg>
             </div>
             <span>InfiConnect</span>
           </div>
@@ -268,6 +497,9 @@ export const App: React.FC = () => {
           >
             <Power size={16} />
             <span>{dict.nav.connect}</span>
+            {connectedCount > 0 && (
+              <span className="nav-badge success">{connectedCount}</span>
+            )}
           </button>
 
           <button
@@ -318,10 +550,8 @@ export const App: React.FC = () => {
           <div className="status-pill">
             <span className={`status-dot ${statusDotClass}`} />
             <div className="status-pill-text">
-              <div className="status-pill-state">{dict.state[status.state]}</div>
-              <div className="status-pill-sub mono">
-                {status.virtualIp || status.profileName || `v${appInfo?.version || "0.1.0"}`}
-              </div>
+              <div className="status-pill-state">{sidebarStateText}</div>
+              <div className="status-pill-sub mono">{sidebarSubText}</div>
             </div>
           </div>
         </div>
@@ -332,9 +562,15 @@ export const App: React.FC = () => {
         <header className="main-topbar">
           <div className="main-topbar-title">{pageTitle[page]}</div>
           <div className="main-topbar-actions">
+            {activeCount > 0 && (
+              <span className="badge badge-accent">
+                {fmt(dict.connect.activeCount, { n: activeCount })}
+              </span>
+            )}
             {sysproxy.enabled && (
               <span className="badge badge-success">
-                {dict.connect.sysproxyTitle}: {dict.common.enabled}
+                {dict.connect.sysproxyTitle}
+                {sysproxy.profileName ? `: ${sysproxy.profileName}` : `: ${dict.common.enabled}`}
               </span>
             )}
           </div>
@@ -343,13 +579,17 @@ export const App: React.FC = () => {
         <main className="main-scroll">
           {page === "connect" && (
             <ConnectView
-              status={status}
-              traffic={traffic}
-              samples={samples}
               profiles={profiles}
-              activeProfileId={activeProfileId}
+              sessionsByProfile={sessionsByProfile}
+              trafficByProfile={trafficByProfile}
+              samplesByProfile={samplesByProfile}
+              selectedProfileId={selectedProfileId}
               sysproxy={sysproxy}
               dict={dict}
+              onSelectProfile={(id) => {
+                setSelectedProfileId(id);
+                AppService.setActiveProfile(id).catch(() => {});
+              }}
               onGoProfiles={() => setPage("profiles")}
               onImportTomlFile={handleImportTomlFile}
               onNotify={notify}
@@ -360,19 +600,20 @@ export const App: React.FC = () => {
             <ProfilesView
               profiles={profiles}
               activeProfileId={activeProfileId}
+              sessionsByProfile={sessionsByProfile}
               settings={settings}
-              isConnectedOrBusy={isConnectedOrBusy}
               dict={dict}
               onImportTomlFile={handleImportTomlFile}
               onConnectProfile={handleConnectProfile}
+              onDisconnectProfile={handleDisconnectProfile}
               onNotify={notify}
             />
           )}
 
           {page === "resources" && (
             <ResourcesView
-              resources={resources}
-              isConnected={isConnected}
+              connectedSessions={connectedSessions}
+              resourcesByProfile={resourcesByProfile}
               dict={dict}
               onNotify={notify}
             />
@@ -381,6 +622,7 @@ export const App: React.FC = () => {
           {page === "logs" && (
             <LogsView
               logs={logs}
+              profiles={profiles}
               dict={dict}
               onCleared={() => setLogs([])}
               onNotify={notify}
@@ -403,6 +645,7 @@ export const App: React.FC = () => {
       {activeChallenge && (
         <ChallengeModal
           challenge={activeChallenge}
+          queueTotal={challenges.length}
           dict={dict}
           onError={(msg) => notify(msg, "error")}
         />

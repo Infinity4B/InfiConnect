@@ -17,11 +17,13 @@ var ErrUnsupported = errors.New("automatic system proxy is not supported on this
 
 // State represents the current system proxy state exposed to the UI.
 type State struct {
-	Enabled   bool   `json:"enabled"`
-	Supported bool   `json:"supported"`
-	HTTPAddr  string `json:"httpAddr,omitempty"`
-	SocksAddr string `json:"socksAddr,omitempty"`
-	Message   string `json:"message,omitempty"`
+	Enabled     bool   `json:"enabled"`
+	Supported   bool   `json:"supported"`
+	ProfileID   string `json:"profileId,omitempty"`
+	ProfileName string `json:"profileName,omitempty"`
+	HTTPAddr    string `json:"httpAddr,omitempty"`
+	SocksAddr   string `json:"socksAddr,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 type journalRecord struct {
@@ -35,6 +37,8 @@ type Manager struct {
 	mu          sync.Mutex
 	journalPath string
 	enabled     bool
+	profileID   string
+	profileName string
 	httpAddr    string
 	socksAddr   string
 	lastMsg     string
@@ -56,11 +60,13 @@ func (m *Manager) State() State {
 		msg = m.lastMsg
 	}
 	return State{
-		Enabled:   m.enabled,
-		Supported: supported,
-		HTTPAddr:  m.httpAddr,
-		SocksAddr: m.socksAddr,
-		Message:   msg,
+		Enabled:     m.enabled,
+		Supported:   supported,
+		ProfileID:   m.profileID,
+		ProfileName: m.profileName,
+		HTTPAddr:    m.httpAddr,
+		SocksAddr:   m.socksAddr,
+		Message:     msg,
 	}
 }
 
@@ -96,6 +102,11 @@ func (m *Manager) RecoverIfDirty() (bool, error) {
 
 // Enable snapshots the current OS proxy state to disk, then enables HTTP/HTTPS/SOCKS5 proxy.
 func (m *Manager) Enable(httpAddr, socksAddr string) error {
+	return m.EnableForProfile("", "", httpAddr, socksAddr)
+}
+
+// EnableForProfile configures OS system proxy for a specific connected VPN profile.
+func (m *Manager) EnableForProfile(profileID, profileName, httpAddr, socksAddr string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -145,6 +156,8 @@ func (m *Manager) Enable(httpAddr, socksAddr string) error {
 	}
 
 	m.enabled = true
+	m.profileID = profileID
+	m.profileName = profileName
 	m.httpAddr = httpAddr
 	m.socksAddr = socksAddr
 	m.lastMsg = ""
@@ -160,6 +173,8 @@ func (m *Manager) Disable() error {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			m.enabled = false
+			m.profileID = ""
+			m.profileName = ""
 			m.httpAddr = ""
 			m.socksAddr = ""
 			return nil
@@ -171,6 +186,8 @@ func (m *Manager) Disable() error {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		_ = os.Remove(m.journalPath)
 		m.enabled = false
+		m.profileID = ""
+		m.profileName = ""
 		return err
 	}
 
@@ -179,6 +196,8 @@ func (m *Manager) Disable() error {
 	}
 	_ = os.Remove(m.journalPath)
 	m.enabled = false
+	m.profileID = ""
+	m.profileName = ""
 	m.httpAddr = ""
 	m.socksAddr = ""
 	m.lastMsg = ""

@@ -48,14 +48,14 @@ type Profile struct {
 	HasSocksPass bool   `json:"hasSocksPass,omitempty"`
 
 	// EasyConnect-specific options.
-	CertFile           string   `json:"certFile,omitempty"`
-	CertPassword       string   `json:"certPassword,omitempty"`
-	TwfID              string   `json:"twfId,omitempty"`
-	DisableMultiLine   bool     `json:"disableMultiLine,omitempty"`
-	DisableServerConfig bool    `json:"disableServerConfig,omitempty"`
-	SkipDomainResource bool     `json:"skipDomainResource,omitempty"`
-	DisableZJUConfig   bool     `json:"disableZjuConfig,omitempty"`
-	CustomProxyDomains []string `json:"customProxyDomains,omitempty"`
+	CertFile            string   `json:"certFile,omitempty"`
+	CertPassword        string   `json:"certPassword,omitempty"`
+	TwfID               string   `json:"twfId,omitempty"`
+	DisableMultiLine    bool     `json:"disableMultiLine,omitempty"`
+	DisableServerConfig bool     `json:"disableServerConfig,omitempty"`
+	SkipDomainResource  bool     `json:"skipDomainResource,omitempty"`
+	DisableZJUConfig    bool     `json:"disableZjuConfig,omitempty"`
+	CustomProxyDomains  []string `json:"customProxyDomains,omitempty"`
 
 	// aTrust-specific options.
 	AuthType                ATrustAuthType `json:"authType,omitempty"`
@@ -186,6 +186,8 @@ type Point struct {
 // Challenge describes an active interactive authentication challenge awaiting UI input.
 type Challenge struct {
 	ID                   string            `json:"id"`
+	ProfileID            string            `json:"profileId,omitempty"`
+	ProfileName          string            `json:"profileName,omitempty"`
 	Type                 ChallengeType     `json:"type"`
 	CodeKind             CodeKind          `json:"codeKind,omitempty"`
 	ExternalKind         ExternalLoginKind `json:"externalKind,omitempty"`
@@ -223,14 +225,17 @@ const (
 
 // LogEntry is a structured log event emitted by the core engine.
 type LogEntry struct {
-	Timestamp time.Time `json:"timestamp"`
-	Level     LogLevel  `json:"level"`
-	Source    string    `json:"source"`
-	Message   string    `json:"message"`
+	Timestamp   time.Time `json:"timestamp"`
+	Level       LogLevel  `json:"level"`
+	Source      string    `json:"source"`
+	ProfileID   string    `json:"profileId,omitempty"`
+	ProfileName string    `json:"profileName,omitempty"`
+	Message     string    `json:"message"`
 }
 
 // TrafficStats holds cumulative byte counts and instantaneous transfer rates.
 type TrafficStats struct {
+	ProfileID   string `json:"profileId,omitempty"`
 	BytesSent   uint64 `json:"bytesSent"`
 	BytesRecv   uint64 `json:"bytesRecv"`
 	RateSent    uint64 `json:"rateSent"`
@@ -264,6 +269,8 @@ type DNSOverrideItem struct {
 
 // ResourceSnapshot is a point-in-time snapshot of server-pushed VPN resources.
 type ResourceSnapshot struct {
+	ProfileID       string               `json:"profileId,omitempty"`
+	ProfileName     string               `json:"profileName,omitempty"`
 	VirtualIP       string               `json:"virtualIp,omitempty"`
 	DNSServers      []string             `json:"dnsServers,omitempty"`
 	IPResources     []IPResourceItem     `json:"ipResources"`
@@ -282,6 +289,8 @@ type RouteCheckResult struct {
 	ViaVPN      bool   `json:"viaVpn"`
 	Reason      string `json:"reason"`
 	MatchedRule string `json:"matchedRule,omitempty"`
+	ProfileID   string `json:"profileId,omitempty"`
+	ProfileName string `json:"profileName,omitempty"`
 }
 
 // StatusSnapshot describes the complete current engine status.
@@ -317,6 +326,7 @@ const (
 // Event is an asynchronous notification emitted by Engine.
 type Event struct {
 	Type        EventType         `json:"type"`
+	ProfileID   string            `json:"profileId,omitempty"`
 	Status      *StatusSnapshot   `json:"status,omitempty"`
 	Challenge   *Challenge        `json:"challenge,omitempty"`
 	ChallengeID string            `json:"challengeId,omitempty"`

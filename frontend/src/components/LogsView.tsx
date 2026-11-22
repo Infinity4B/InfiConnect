@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Search, ShieldCheck, Trash2 } from "lucide-react";
-import { AppService, type LogEntry, type LogLevel } from "../mygo";
+import { AppService, type LogEntry, type LogLevel, type Profile } from "../mygo";
 import { type Dict, fmt } from "../i18n";
 import { formatTimestamp } from "../utils/format";
 
 interface LogsViewProps {
   logs: LogEntry[];
+  profiles: Profile[];
   dict: Dict;
   onCleared: () => void;
   onNotify: (msg: string, kind?: "success" | "error") => void;
@@ -20,11 +21,13 @@ const LEVEL_RANK: Record<LogLevel, number> = {
 
 export const LogsView: React.FC<LogsViewProps> = ({
   logs,
+  profiles,
   dict,
   onCleared,
   onNotify,
 }) => {
   const [minLevel, setMinLevel] = useState<"all" | LogLevel>("all");
+  const [profileFilter, setProfileFilter] = useState<string>("");
   const [search, setSearch] = useState("");
   const [autoScroll, setAutoScroll] = useState(true);
   const consoleRef = useRef<HTMLDivElement | null>(null);
@@ -34,13 +37,15 @@ export const LogsView: React.FC<LogsViewProps> = ({
     const minRank = minLevel === "all" ? -1 : LEVEL_RANK[minLevel];
     return logs.filter((entry) => {
       if (LEVEL_RANK[entry.level] < minRank) return false;
+      if (profileFilter && entry.profileId !== profileFilter) return false;
       if (!q) return true;
       return (
         entry.message.toLowerCase().includes(q) ||
-        entry.source.toLowerCase().includes(q)
+        entry.source.toLowerCase().includes(q) ||
+        (entry.profileName && entry.profileName.toLowerCase().includes(q))
       );
     });
-  }, [logs, minLevel, search]);
+  }, [logs, minLevel, profileFilter, search]);
 
   useEffect(() => {
     if (!autoScroll || !consoleRef.current) return;
@@ -95,6 +100,22 @@ export const LogsView: React.FC<LogsViewProps> = ({
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            {profiles.length > 1 && (
+              <select
+                className="select"
+                style={{ width: "auto", minWidth: 130, paddingTop: 6, paddingBottom: 6 }}
+                value={profileFilter}
+                onChange={(e) => setProfileFilter(e.target.value)}
+              >
+                <option value="">{dict.logs.allProfiles}</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
             <div style={{ position: "relative", width: 200 }}>
               <Search
                 size={14}
@@ -167,6 +188,9 @@ export const LogsView: React.FC<LogsViewProps> = ({
               <div key={idx} className="log-line">
                 <span className="log-ts">{formatTimestamp(entry.timestamp)}</span>
                 <span className={`log-lvl ${entry.level}`}>{entry.level}</span>
+                {entry.profileName && (
+                  <span className="log-profile">[{entry.profileName}]</span>
+                )}
                 <span className="log-src">[{entry.source || "core"}]</span>
                 <span className="log-msg">{entry.message}</span>
               </div>

@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Square,
   Trash2,
   X,
 } from "lucide-react";
@@ -20,17 +21,19 @@ import {
   type Profile,
   type Protocol,
   type SaveProfileInput,
+  type StatusSnapshot,
 } from "../mygo";
 import { type Dict, fmt } from "../i18n";
 
 interface ProfilesViewProps {
   profiles: Profile[];
   activeProfileId: string;
+  sessionsByProfile: Record<string, StatusSnapshot>;
   settings: AppSettings;
-  isConnectedOrBusy: boolean;
   dict: Dict;
   onImportTomlFile: () => void;
   onConnectProfile: (profileId: string) => void;
+  onDisconnectProfile: (profileId: string) => void;
   onNotify: (msg: string, kind?: "success" | "error") => void;
 }
 
@@ -66,11 +69,12 @@ function createEmptyProfile(settings: AppSettings): Profile {
 export const ProfilesView: React.FC<ProfilesViewProps> = ({
   profiles,
   activeProfileId,
+  sessionsByProfile,
   settings,
-  isConnectedOrBusy,
   dict,
   onImportTomlFile,
   onConnectProfile,
+  onDisconnectProfile,
   onNotify,
 }) => {
   const [editing, setEditing] = useState<Profile | null>(null);
@@ -173,7 +177,17 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
   };
 
   const handleDelete = async (p: Profile) => {
-    const ok = window.confirm(fmt(dict.profiles.deleteConfirm, { name: p.name }));
+    const sess = sessionsByProfile[p.id];
+    const isRunning =
+      sess &&
+      (sess.state === "connected" ||
+        sess.state === "connecting" ||
+        sess.state === "authenticating" ||
+        sess.state === "reconnecting");
+    const msg = isRunning
+      ? fmt(dict.profiles.deleteConnectedConfirm, { name: p.name })
+      : fmt(dict.profiles.deleteConfirm, { name: p.name });
+    const ok = window.confirm(msg);
     if (!ok) return;
     try {
       await AppService.deleteProfile(p.id);
@@ -265,6 +279,14 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {profiles.map((p) => {
             const isActive = p.id === activeProfileId;
+            const sess = sessionsByProfile[p.id];
+            const sessState = sess?.state || "idle";
+            const isSessConnected = sessState === "connected";
+            const isSessBusy =
+              sessState === "connecting" ||
+              sessState === "authenticating" ||
+              sessState === "reconnecting" ||
+              sessState === "disconnecting";
             return (
               <div
                 key={p.id}
@@ -278,8 +300,24 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
                     >
                       {p.protocol === "atrust" ? "aTrust" : "EasyConnect"}
                     </span>
+                    {isSessConnected && (
+                      <span className="badge badge-success mono">
+                        {dict.state.connected}
+                        {sess?.virtualIp ? ` · ${sess.virtualIp}` : ""}
+                      </span>
+                    )}
+                    {isSessBusy && (
+                      <span className="badge badge-warning">
+                        {dict.state[sessState]}
+                      </span>
+                    )}
+                    {sessState === "error" && (
+                      <span className="badge badge-danger">
+                        {dict.state.error}
+                      </span>
+                    )}
                     {isActive && (
-                      <span className="badge badge-success">
+                      <span className="badge badge-neutral">
                         <CheckCircle2 size={11} />
                         {dict.profiles.active}
                       </span>
@@ -296,8 +334,8 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
                       {p.serverAddress}:{p.serverPort}
                     </span>
                     {p.username && <span>@{p.username}</span>}
-                    <span>SOCKS5 {p.socksBind}</span>
-                    <span>HTTP {p.httpBind}</span>
+                    <span>SOCKS5 {sess?.socksAddr || p.socksBind}</span>
+                    <span>HTTP {sess?.httpAddr || p.httpBind}</span>
                     {p.tunMode && (
                       <span className="badge badge-success">Split-TUN</span>
                     )}
@@ -317,15 +355,25 @@ export const ProfilesView: React.FC<ProfilesViewProps> = ({
                       {dict.profiles.setActive}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-primary"
-                    disabled={isConnectedOrBusy}
-                    onClick={() => onConnectProfile(p.id)}
-                  >
-                    <Play size={13} />
-                    {dict.profiles.connectNow}
-                  </button>
+                  {isSessConnected || isSessBusy ? (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      onClick={() => onDisconnectProfile(p.id)}
+                    >
+                      <Square size={12} />
+                      {dict.profiles.disconnectNow}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={() => onConnectProfile(p.id)}
+                    >
+                      <Play size={13} />
+                      {dict.profiles.connectNow}
+                    </button>
+                  )}
                   {p.protocol === "atrust" && (
                     <button
                       type="button"

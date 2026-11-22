@@ -36,12 +36,12 @@ type pendingChallenge struct {
 // ChallengeBridge converts zju-connect's synchronous authchallenge.Handler
 // callbacks into asynchronous Challenge events answered by the UI.
 type ChallengeBridge struct {
-	mu       sync.Mutex
-	pending  map[string]*pendingChallenge
-	timeout  time.Duration
-	emitFn   func(Challenge)
+	mu        sync.Mutex
+	pending   map[string]*pendingChallenge
+	timeout   time.Duration
+	emitFn    func(Challenge)
 	resolveFn func(challengeID string)
-	ctxFn    func() context.Context
+	ctxFn     func() context.Context
 }
 
 // NewChallengeBridge creates a ChallengeBridge.

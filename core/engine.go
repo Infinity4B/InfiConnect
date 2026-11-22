@@ -6,13 +6,13 @@ import (
 )
 
 var (
-	ErrAlreadyConnected   = errors.New("a VPN session is already active")
-	ErrNotConnected       = errors.New("no active VPN session")
-	ErrChallengeNotFound  = errors.New("authentication challenge not found or already resolved")
-	ErrChallengeCanceled  = errors.New("authentication challenge canceled")
-	ErrChallengeTimeout   = errors.New("authentication challenge timed out")
-	ErrInvalidProfile     = errors.New("invalid connection profile")
-	ErrEngineClosed       = errors.New("engine is closed")
+	ErrAlreadyConnected  = errors.New("a VPN session is already active")
+	ErrNotConnected      = errors.New("no active VPN session")
+	ErrChallengeNotFound = errors.New("authentication challenge not found or already resolved")
+	ErrChallengeCanceled = errors.New("authentication challenge canceled")
+	ErrChallengeTimeout  = errors.New("authentication challenge timed out")
+	ErrInvalidProfile    = errors.New("invalid connection profile")
+	ErrEngineClosed      = errors.New("engine is closed")
 )
 
 // Engine is the sole boundary between the protocol core (zju-connect) and

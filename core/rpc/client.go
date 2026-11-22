@@ -133,13 +133,20 @@ func (e *SubprocessEngine) emitLog(level core.LogLevel, source, msg string) {
 	if msg == "" {
 		return
 	}
+	e.mu.RLock()
+	profID := e.profile.ID
+	profName := e.profile.Name
+	e.mu.RUnlock()
 	e.emit(core.Event{
-		Type: core.EventLog,
+		Type:      core.EventLog,
+		ProfileID: profID,
 		Log: &core.LogEntry{
-			Timestamp: time.Now(),
-			Level:     level,
-			Source:    source,
-			Message:   msg,
+			Timestamp:   time.Now(),
+			Level:       level,
+			Source:      source,
+			ProfileID:   profID,
+			ProfileName: profName,
+			Message:     msg,
 		},
 	})
 }

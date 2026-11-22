@@ -37,6 +37,8 @@ export interface AppSettings {
 /** Challenge describes an active interactive authentication challenge awaiting UI input. */
 export interface Challenge {
   id: string;
+  profileId?: string;
+  profileName?: string;
   type: ChallengeType;
   codeKind?: CodeKind;
   externalKind?: ExternalLoginKind;
@@ -116,6 +118,8 @@ export interface LogEntry {
   timestamp: string;
   level: LogLevel;
   source: string;
+  profileId?: string;
+  profileName?: string;
   message: string;
 }
 
@@ -210,6 +214,8 @@ export type Protocol = "easyconnect" | "atrust";
 
 /** ResourceSnapshot is a point-in-time snapshot of server-pushed VPN resources. */
 export interface ResourceSnapshot {
+  profileId?: string;
+  profileName?: string;
   virtualIp?: string;
   dnsServers?: string[];
   ipResources: IPResourceItem[];
@@ -228,6 +234,8 @@ export interface RouteCheckResult {
   viaVpn: boolean;
   reason: string;
   matchedRule?: string;
+  profileId?: string;
+  profileName?: string;
 }
 
 /** SaveProfileInput carries a profile along with explicit flags for clearing stored secrets. */
@@ -263,6 +271,8 @@ export interface StatusSnapshot {
 export interface SysproxyState {
   enabled: boolean;
   supported: boolean;
+  profileId?: string;
+  profileName?: string;
   httpAddr?: string;
   socksAddr?: string;
   message?: string;
@@ -270,6 +280,7 @@ export interface SysproxyState {
 
 /** TrafficStats holds cumulative byte counts and instantaneous transfer rates. */
 export interface TrafficStats {
+  profileId?: string;
   bytesSent: number;
   bytesRecv: number;
   rateSent: number;
@@ -290,38 +301,50 @@ export interface UpdateCheckResult {
 
 /**
  * AppService is the sole mygo-bound service exposed to the TypeScript frontend.
- * It depends strictly on core.Engine and never imports upstream zju-connect.
+ * It depends strictly on core.SessionManager / core.Engine and never imports upstream zju-connect.
  */
 export const AppService = {
   /** CancelChallenge cancels a pending interactive authentication challenge. */
   cancelChallenge: bind<[string], void>("AppService.CancelChallenge", (challengeID: string) => [challengeID]),
   /** CheckForUpdates checks for signed application updates via mygo.Updater. */
   checkForUpdates: bind<[], UpdateCheckResult>("AppService.CheckForUpdates", () => []),
-  /** CheckRoute evaluates whether target (URL, domain, or IP:port) routes through VPN. */
-  checkRoute: bind<[string, number, string], RouteCheckResult>("AppService.CheckRoute", (target: string, defaultPort: number, network: string) => [target, defaultPort, network]),
+  /**
+   * CheckRoute evaluates whether target (URL, domain, or IP:port) routes through VPN.
+   * Pass an empty profileID to check across all connected sessions.
+   */
+  checkRoute: bind<[string, string, number, string], RouteCheckResult>("AppService.CheckRoute", (profileID: string, target: string, defaultPort: number, network: string) => [profileID, target, defaultPort, network]),
   /** ClearLogs empties the in-memory log buffer. */
   clearLogs: bind<[], void>("AppService.ClearLogs", () => []),
   /** ClearProfileSession deletes cached aTrust session data for a profile to force fresh authentication. */
   clearProfileSession: bind<[string], void>("AppService.ClearProfileSession", (id: string) => [id]),
-  /** Connect starts a VPN session using profileID (or the active profile when empty). */
+  /**
+   * Connect starts a VPN session using profileID (or the active profile when empty).
+   * Multiple different profiles can be connected simultaneously.
+   */
   connect: bind<[string], void>("AppService.Connect", (profileID: string) => [profileID]),
   /** CopyText copies text to the system clipboard. */
   copyText: bind<[string], void>("AppService.CopyText", (text: string) => [text]),
-  /** DeleteProfile deletes a connection profile and removes its secrets from the OS keychain. */
+  /** DeleteProfile deletes a connection profile (disconnecting it first if active) and removes its secrets. */
   deleteProfile: bind<[string], void>("AppService.DeleteProfile", (id: string) => [id]),
-  /** Disconnect terminates the active VPN session and restores system proxy settings if active. */
-  disconnect: bind<[], void>("AppService.Disconnect", () => []),
+  /** Disconnect terminates the VPN session for profileID (or all active sessions when profileID is empty). */
+  disconnect: bind<[string], void>("AppService.Disconnect", (profileID: string) => [profileID]),
+  /** DisconnectAll terminates every active VPN session and restores system proxy settings. */
+  disconnectAll: bind<[], void>("AppService.DisconnectAll", () => []),
   /** ExportSanitizedLogs saves redacted logs (scrubbing usernames, tokens, SIDs, cookies, secrets) to a file chosen by the user. */
   exportSanitizedLogs: bind<[], string>("AppService.ExportSanitizedLogs", () => []),
+  /** GetAllResources returns server-pushed resources for every currently connected session. */
+  getAllResources: bind<[], ResourceSnapshot[]>("AppService.GetAllResources", () => []),
   /** GetAppInfo returns application metadata and runtime environment details. */
   getAppInfo: bind<[], AppInfo>("AppService.GetAppInfo", () => []),
   /** GetLogs returns buffered log entries filtered by optional minimum level. */
   getLogs: bind<[string, number], LogEntry[]>("AppService.GetLogs", (minLevel: string, limit: number) => [minLevel, limit]),
-  /** GetResources returns the server-pushed IP ranges, domains, and DNS overrides. */
-  getResources: bind<[], ResourceSnapshot>("AppService.GetResources", () => []),
+  /** GetResources returns server-pushed resources for profileID (or the primary connected session when empty). */
+  getResources: bind<[string], ResourceSnapshot>("AppService.GetResources", (profileID: string) => [profileID]),
+  /** GetSessions returns status snapshots for all active, connecting, or errored VPN sessions. */
+  getSessions: bind<[], StatusSnapshot[]>("AppService.GetSessions", () => []),
   /** GetSettings returns the current global application settings. */
   getSettings: bind<[], AppSettings>("AppService.GetSettings", () => []),
-  /** GetStatus returns the current VPN connection status snapshot. */
+  /** GetStatus returns the primary VPN connection status snapshot. */
   getStatus: bind<[], StatusSnapshot>("AppService.GetStatus", () => []),
   /** GetSystemProxyState returns the current OS system proxy configuration state. */
   getSystemProxyState: bind<[], SysproxyState>("AppService.GetSystemProxyState", () => []),
@@ -347,8 +370,11 @@ export const AppService = {
   saveSettings: bind<[AppSettings], AppSettings>("AppService.SaveSettings", (cfg: AppSettings) => [cfg]),
   /** SetActiveProfile sets the active profile used when clicking Connect. */
   setActiveProfile: bind<[string], void>("AppService.SetActiveProfile", (id: string) => [id]),
-  /** SetSystemProxy enables or disables the OS system proxy pointing to the active local proxy addresses. */
-  setSystemProxy: bind<[boolean], SysproxyState>("AppService.SetSystemProxy", (enabled: boolean) => [enabled]),
+  /**
+   * SetSystemProxy enables or disables the OS system proxy pointing to profileID's local proxy addresses
+   * (or the first connected session when profileID is empty).
+   */
+  setSystemProxy: bind<[string, boolean], SysproxyState>("AppService.SetSystemProxy", (profileID: string, enabled: boolean) => [profileID, enabled]),
   /** SubmitChallenge submits the user's answer for a pending interactive authentication challenge. */
   submitChallenge: bind<[ChallengeAnswer], void>("AppService.SubmitChallenge", (answer: ChallengeAnswer) => [answer]),
   /** UninstallTUNHelper removes the macOS privileged Split-TUN helper daemon. */
@@ -360,6 +386,7 @@ export const AppService = {
 /** Events sent by the Go side. Subscribe with `events.name.on(listener)`. */
 export const events = {
   vpnState: event<StatusSnapshot>("vpn:state"),
+  vpnSessions: event<StatusSnapshot[]>("vpn:sessions"),
   vpnChallenge: event<Challenge>("vpn:challenge"),
   vpnChallengeResolved: event<string>("vpn:challenge-resolved"),
   vpnLog: event<LogEntry>("vpn:log"),

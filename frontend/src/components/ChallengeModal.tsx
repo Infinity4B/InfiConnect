@@ -23,12 +23,14 @@ interface ClickMarker {
 
 interface ChallengeModalProps {
   challenge: Challenge;
+  queueTotal?: number;
   dict: Dict;
   onError: (msg: string) => void;
 }
 
 export const ChallengeModal: React.FC<ChallengeModalProps> = ({
   challenge,
+  queueTotal = 1,
   dict,
   onError,
 }) => {
@@ -200,16 +202,26 @@ export const ChallengeModal: React.FC<ChallengeModalProps> = ({
     <div className="modal-backdrop">
       <div className="modal-panel" role="dialog" aria-modal="true">
         <div className="modal-header">
-          <h3 className="modal-title">
-            {challenge.type === "click_captcha" ? (
-              <MousePointerClick size={18} color="var(--accent)" />
-            ) : challenge.type === "external_login" ? (
-              <Globe size={18} color="var(--accent)" />
-            ) : (
-              <KeyRound size={18} color="var(--accent)" />
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <h3 className="modal-title">
+              {challenge.type === "click_captcha" ? (
+                <MousePointerClick size={18} color="var(--accent)" />
+              ) : challenge.type === "external_login" ? (
+                <Globe size={18} color="var(--accent)" />
+              ) : (
+                <KeyRound size={18} color="var(--accent)" />
+              )}
+              {title}
+            </h3>
+            {challenge.profileName && (
+              <span className="badge badge-accent">{challenge.profileName}</span>
             )}
-            {title}
-          </h3>
+            {queueTotal > 1 && (
+              <span className="badge badge-neutral">
+                {fmt(dict.challenge.queueBadge, { current: 1, total: queueTotal })}
+              </span>
+            )}
+          </div>
           <span
             className={`badge tabular ${secondsLeft <= 30 ? "badge-danger" : "badge-warning"}`}
           >

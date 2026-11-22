@@ -172,13 +172,20 @@ func (e *InProcessEngine) emitLog(level LogLevel, source, msg string) {
 	if msg == "" {
 		return
 	}
+	e.mu.RLock()
+	profID := e.profile.ID
+	profName := e.profile.Name
+	e.mu.RUnlock()
 	e.emit(Event{
-		Type: EventLog,
+		Type:      EventLog,
+		ProfileID: profID,
 		Log: &LogEntry{
-			Timestamp: time.Now(),
-			Level:     level,
-			Source:    source,
-			Message:   msg,
+			Timestamp:   time.Now(),
+			Level:       level,
+			Source:      source,
+			ProfileID:   profID,
+			ProfileName: profName,
+			Message:     msg,
 		},
 	})
 }
@@ -196,7 +203,13 @@ func (e *InProcessEngine) Resources() ResourceSnapshot {
 }
 
 func (e *InProcessEngine) CheckRoute(target string, defaultPort int, network string) RouteCheckResult {
-	return EvaluateRoute(e.Resources(), target, defaultPort, network)
+	res := e.Resources()
+	out := EvaluateRoute(res, target, defaultPort, network)
+	if out.ViaVPN {
+		out.ProfileID = res.ProfileID
+		out.ProfileName = res.ProfileName
+	}
+	return out
 }
 
 func (e *InProcessEngine) Status() StatusSnapshot {
@@ -214,6 +227,10 @@ func (e *InProcessEngine) statusLocked() StatusSnapshot {
 	var activeCh *Challenge
 	if e.bridge != nil {
 		activeCh = e.bridge.Active()
+		if activeCh != nil {
+			activeCh.ProfileID = e.profile.ID
+			activeCh.ProfileName = e.profile.Name
+		}
 	}
 	var connAt *time.Time
 	if e.connectedAt != nil {
@@ -224,6 +241,8 @@ func (e *InProcessEngine) statusLocked() StatusSnapshot {
 	if e.profile.ServerAddress != "" {
 		server = net.JoinHostPort(e.profile.ServerAddress, strconv.Itoa(e.profile.ServerPort))
 	}
+	traffic := e.counter.Snapshot()
+	traffic.ProfileID = e.profile.ID
 	return StatusSnapshot{
 		State:            e.state,
 		ProfileID:        e.profile.ID,
@@ -237,7 +256,7 @@ func (e *InProcessEngine) statusLocked() StatusSnapshot {
 		ReconnectAttempt: e.reconnectN,
 		LastError:        e.lastError,
 		ActiveChallenge:  activeCh,
-		Traffic:          e.counter.Snapshot(),
+		Traffic:          traffic,
 	}
 }
 
@@ -256,9 +275,9 @@ func (e *InProcessEngine) transition(st State, lastErr string) {
 	e.mu.Lock()
 	snap := e.setStateLocked(st, lastErr)
 	e.mu.Unlock()
-	e.emit(Event{Type: EventState, Status: &snap})
+	e.emit(Event{Type: EventState, ProfileID: snap.ProfileID, Status: &snap})
 	if lastErr != "" {
-		e.emit(Event{Type: EventError, Error: lastErr, Status: &snap})
+		e.emit(Event{Type: EventError, ProfileID: snap.ProfileID, Error: lastErr, Status: &snap})
 	}
 }
 
@@ -303,14 +322,16 @@ func (e *InProcessEngine) Connect(_ context.Context, profile Profile) error {
 		e.opts.ChallengeTimeout,
 		func() context.Context { return sessionCtx },
 		func(ch Challenge) {
+			ch.ProfileID = profile.ID
+			ch.ProfileName = profile.Name
 			e.mu.Lock()
 			if e.state == StateConnecting || e.state == StateReconnecting {
 				e.state = StateAuthenticating
 			}
 			snap := e.statusLocked()
 			e.mu.Unlock()
-			e.emit(Event{Type: EventState, Status: &snap})
-			e.emit(Event{Type: EventChallenge, Challenge: &ch, Status: &snap})
+			e.emit(Event{Type: EventState, ProfileID: profile.ID, Status: &snap})
+			e.emit(Event{Type: EventChallenge, ProfileID: profile.ID, Challenge: &ch, Status: &snap})
 		},
 		func(challengeID string) {
 			e.mu.Lock()
@@ -319,8 +340,8 @@ func (e *InProcessEngine) Connect(_ context.Context, profile Profile) error {
 			}
 			snap := e.statusLocked()
 			e.mu.Unlock()
-			e.emit(Event{Type: EventChallengeResolved, ChallengeID: challengeID, Status: &snap})
-			e.emit(Event{Type: EventState, Status: &snap})
+			e.emit(Event{Type: EventChallengeResolved, ProfileID: profile.ID, ChallengeID: challengeID, Status: &snap})
+			e.emit(Event{Type: EventState, ProfileID: profile.ID, Status: &snap})
 		},
 	)
 	e.bridge = bridge
@@ -430,6 +451,8 @@ func (e *InProcessEngine) runSessionLoop(ctx context.Context, done chan struct{}
 		// Session established!
 		now := time.Now()
 		resSnap := sess.Resources()
+		resSnap.ProfileID = profile.ID
+		resSnap.ProfileName = profile.Name
 		e.mu.Lock()
 		e.connectedAt = &now
 		e.reconnectN = 0
@@ -480,8 +503,8 @@ func (e *InProcessEngine) runSessionLoop(ctx context.Context, done chan struct{}
 		}
 		e.target.Set(dt)
 
-		e.emit(Event{Type: EventResources, Resources: &resSnap, Status: &snap})
-		e.emit(Event{Type: EventState, Status: &snap})
+		e.emit(Event{Type: EventResources, ProfileID: profile.ID, Resources: &resSnap, Status: &snap})
+		e.emit(Event{Type: EventState, ProfileID: profile.ID, Status: &snap})
 		e.emitLog(LogInfo, "core", fmt.Sprintf("Connected (virtual IP: %s, %d IP rules, %d domain rules)", resSnap.VirtualIP, len(resSnap.IPResources), len(resSnap.DomainResources)))
 
 		// Run keepalive + traffic monitor until disconnect or failure.
@@ -542,7 +565,8 @@ func (e *InProcessEngine) monitorSession(ctx context.Context, sess ActiveSession
 			return err
 		case <-trafficTicker.C:
 			stats := e.counter.Snapshot()
-			e.emit(Event{Type: EventTraffic, Traffic: &stats})
+			stats.ProfileID = profile.ID
+			e.emit(Event{Type: EventTraffic, ProfileID: profile.ID, Traffic: &stats})
 		case <-kaChan:
 			kaCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			err := sess.KeepAlive(kaCtx)

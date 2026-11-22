@@ -10,16 +10,19 @@ import (
 	"github.com/inficonnect/inficonnect/core"
 )
 
-// ExternalLoginManager opens an isolated, untrusted mygo WebView child window
-// for CAS / OAuth2 logins and intercepts navigation to the callback URL via
+// ExternalLoginManager opens isolated, untrusted mygo WebView child windows
+// for CAS / OAuth2 logins (keyed per challengeID so concurrent connections
+// never clobber each other) and intercepts navigation to the callback URL via
 // Page.OnWillNavigate.
 type ExternalLoginManager struct {
-	mu  sync.Mutex
-	win *mygo.Window
+	mu   sync.Mutex
+	wins map[string]*mygo.Window
 }
 
 func NewExternalLoginManager() *ExternalLoginManager {
-	return &ExternalLoginManager{}
+	return &ExternalLoginManager{
+		wins: make(map[string]*mygo.Window),
+	}
 }
 
 // Open launches an untrusted login window for loginURL and invokes onCallback
@@ -36,7 +39,7 @@ func (m *ExternalLoginManager) Open(
 		return fmt.Errorf("invalid external login URL: %q", loginURL)
 	}
 
-	m.Close()
+	m.CloseChallenge(challengeID)
 
 	title := "External Sign-In"
 	switch kind {
@@ -92,26 +95,45 @@ func (m *ExternalLoginManager) Open(
 
 	win.OnClosed(func() {
 		m.mu.Lock()
-		if m.win == win {
-			m.win = nil
+		if m.wins[challengeID] == win {
+			delete(m.wins, challengeID)
 		}
 		m.mu.Unlock()
 	})
 
 	m.mu.Lock()
-	m.win = win
+	m.wins[challengeID] = win
 	m.mu.Unlock()
 	return nil
 }
 
-// Close closes any currently open external login child window.
-func (m *ExternalLoginManager) Close() {
+// CloseChallenge closes the external login window associated with challengeID.
+func (m *ExternalLoginManager) CloseChallenge(challengeID string) {
+	if challengeID == "" {
+		return
+	}
 	m.mu.Lock()
-	win := m.win
-	m.win = nil
+	win := m.wins[challengeID]
+	delete(m.wins, challengeID)
 	m.mu.Unlock()
 	if win != nil && !win.IsDestroyed() {
 		win.Close()
+	}
+}
+
+// Close closes all currently open external login child windows.
+func (m *ExternalLoginManager) Close() {
+	m.mu.Lock()
+	list := make([]*mygo.Window, 0, len(m.wins))
+	for id, win := range m.wins {
+		list = append(list, win)
+		delete(m.wins, id)
+	}
+	m.mu.Unlock()
+	for _, win := range list {
+		if win != nil && !win.IsDestroyed() {
+			win.Close()
+		}
 	}
 }
 

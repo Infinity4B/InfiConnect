@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -10,9 +10,11 @@ import {
   FileUp,
   Globe,
   KeyRound,
+  Layers,
   Network,
   Plus,
   Power,
+  PowerOff,
   Server,
   Shield,
   Terminal,
@@ -20,6 +22,7 @@ import {
 import {
   AppService,
   type Profile,
+  type State,
   type StatusSnapshot,
   type SysproxyState,
   type TrafficStats,
@@ -29,89 +32,249 @@ import { formatBytes, formatDuration, formatRate } from "../utils/format";
 import { TrafficSparkline, type TrafficSample } from "./TrafficSparkline";
 
 interface ConnectViewProps {
-  status: StatusSnapshot;
-  traffic: TrafficStats;
-  samples: TrafficSample[];
   profiles: Profile[];
-  activeProfileId: string;
+  sessionsByProfile: Record<string, StatusSnapshot>;
+  trafficByProfile: Record<string, TrafficStats>;
+  samplesByProfile: Record<string, TrafficSample[]>;
+  selectedProfileId: string;
   sysproxy: SysproxyState;
   dict: Dict;
+  onSelectProfile: (profileId: string) => void;
   onGoProfiles: () => void;
   onImportTomlFile: () => void;
   onNotify: (msg: string, kind?: "success" | "error") => void;
 }
 
+const ZERO_TRAFFIC: TrafficStats = {
+  bytesSent: 0,
+  bytesRecv: 0,
+  rateSent: 0,
+  rateRecv: 0,
+  activeConns: 0,
+};
+
+function isBusyState(st: State): boolean {
+  return (
+    st === "connecting" ||
+    st === "authenticating" ||
+    st === "reconnecting" ||
+    st === "disconnecting"
+  );
+}
+
 export const ConnectView: React.FC<ConnectViewProps> = ({
-  status,
-  traffic,
-  samples,
   profiles,
-  activeProfileId,
+  sessionsByProfile,
+  trafficByProfile,
+  samplesByProfile,
+  selectedProfileId,
   sysproxy,
   dict,
+  onSelectProfile,
   onGoProfiles,
   onImportTomlFile,
   onNotify,
 }) => {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [copiedKey, setCopiedKey] = useState<string>("");
-  const [busyAction, setBusyAction] = useState(false);
+  const [busyProfileIds, setBusyProfileIds] = useState<Record<string, boolean>>({});
+  const [disconnectingAll, setDisconnectingAll] = useState(false);
+  const [trafficScope, setTrafficScope] = useState<"current" | "all">("current");
 
-  const isConnected = status.state === "connected";
-  const isBusy =
-    status.state === "connecting" ||
-    status.state === "authenticating" ||
-    status.state === "reconnecting" ||
-    status.state === "disconnecting";
-  const isError = status.state === "error";
+  const sessionList = useMemo(
+    () => Object.values(sessionsByProfile),
+    [sessionsByProfile],
+  );
+  const connectedCount = useMemo(
+    () => sessionList.filter((s) => s.state === "connected").length,
+    [sessionList],
+  );
+  const activeCount = useMemo(
+    () =>
+      sessionList.filter((s) => s.state === "connected" || isBusyState(s.state))
+        .length,
+    [sessionList],
+  );
 
   useEffect(() => {
-    if (!isConnected) return;
+    if (connectedCount === 0) return;
     setNowMs(Date.now());
     const id = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(id);
-  }, [isConnected]);
+  }, [connectedCount]);
 
-  const activeProfile =
-    profiles.find((p) => p.id === activeProfileId) || profiles[0] || null;
+  // Reset traffic scope to current if fewer than 2 active connections
+  useEffect(() => {
+    if (connectedCount < 2 && trafficScope === "all") {
+      setTrafficScope("current");
+    }
+  }, [connectedCount, trafficScope]);
+
+  const selectedProfile =
+    profiles.find((p) => p.id === selectedProfileId) || profiles[0] || null;
+
+  const status: StatusSnapshot = useMemo(() => {
+    if (selectedProfile && sessionsByProfile[selectedProfile.id]) {
+      return sessionsByProfile[selectedProfile.id];
+    }
+    return {
+      state: "idle",
+      profileId: selectedProfile?.id,
+      profileName: selectedProfile?.name,
+      protocol: selectedProfile?.protocol,
+      server: selectedProfile
+        ? `${selectedProfile.serverAddress}:${selectedProfile.serverPort}`
+        : undefined,
+      traffic: ZERO_TRAFFIC,
+    };
+  }, [selectedProfile, sessionsByProfile]);
+
+  const isConnected = status.state === "connected";
+  const isBusy = isBusyState(status.state);
+  const isError = status.state === "error";
+
+  const selectedTraffic =
+    (selectedProfile && trafficByProfile[selectedProfile.id]) ||
+    status.traffic ||
+    ZERO_TRAFFIC;
+
+  const aggregateTraffic = useMemo<TrafficStats>(() => {
+    let bytesSent = 0;
+    let bytesRecv = 0;
+    let rateSent = 0;
+    let rateRecv = 0;
+    let activeConns = 0;
+    for (const st of sessionList) {
+      if (st.state !== "connected") continue;
+      const t = (st.profileId && trafficByProfile[st.profileId]) || st.traffic;
+      if (!t) continue;
+      bytesSent += t.bytesSent || 0;
+      bytesRecv += t.bytesRecv || 0;
+      rateSent += t.rateSent || 0;
+      rateRecv += t.rateRecv || 0;
+      activeConns += t.activeConns || 0;
+    }
+    return { bytesSent, bytesRecv, rateSent, rateRecv, activeConns };
+  }, [sessionList, trafficByProfile]);
+
+  const aggregateSamples = useMemo<TrafficSample[]>(() => {
+    const lists = sessionList
+      .filter((s) => s.state === "connected" && s.profileId)
+      .map((s) => samplesByProfile[s.profileId!] || [])
+      .filter((arr) => arr.length > 0);
+    if (lists.length === 0) return [];
+    const maxLen = Math.max(...lists.map((a) => a.length));
+    const out: TrafficSample[] = [];
+    for (let i = 0; i < maxLen; i++) {
+      let rateSent = 0;
+      let rateRecv = 0;
+      for (const arr of lists) {
+        const idx = arr.length - maxLen + i;
+        if (idx >= 0) {
+          rateSent += arr[idx].rateSent;
+          rateRecv += arr[idx].rateRecv;
+        }
+      }
+      out.push({ rateSent, rateRecv });
+    }
+    return out;
+  }, [sessionList, samplesByProfile]);
+
+  const displayedTraffic =
+    trafficScope === "all" && connectedCount > 1
+      ? aggregateTraffic
+      : selectedTraffic;
+  const displayedSamples =
+    trafficScope === "all" && connectedCount > 1
+      ? aggregateSamples
+      : (selectedProfile && samplesByProfile[selectedProfile.id]) || [];
 
   const socksDisplay =
-    status.socksAddr || activeProfile?.socksBind || "127.0.0.1:1080";
+    status.socksAddr || selectedProfile?.socksBind || "127.0.0.1:1080";
   const httpDisplay =
-    status.httpAddr || activeProfile?.httpBind || "127.0.0.1:1081";
+    status.httpAddr || selectedProfile?.httpBind || "127.0.0.1:1081";
 
-  const handleToggleConnect = async () => {
-    if (busyAction) return;
-    setBusyAction(true);
+  const socksAutoAssigned =
+    Boolean(status.socksAddr) &&
+    Boolean(selectedProfile?.socksBind) &&
+    status.socksAddr !== selectedProfile?.socksBind;
+  const httpAutoAssigned =
+    Boolean(status.httpAddr) &&
+    Boolean(selectedProfile?.httpBind) &&
+    status.httpAddr !== selectedProfile?.httpBind;
+
+  const setProfileBusy = (id: string, val: boolean) => {
+    setBusyProfileIds((prev) => {
+      if (val) return { ...prev, [id]: true };
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+  };
+
+  const handleToggleProfile = async (prof: Profile) => {
+    if (busyProfileIds[prof.id]) return;
+    const st = sessionsByProfile[prof.id];
+    const active = st && (st.state === "connected" || isBusyState(st.state));
+    setProfileBusy(prof.id, true);
     try {
-      if (isConnected || isBusy) {
-        await AppService.disconnect();
+      if (active) {
+        await AppService.disconnect(prof.id);
       } else {
-        if (!activeProfile) {
-          onGoProfiles();
-          return;
-        }
-        await AppService.connect(activeProfile.id);
+        onSelectProfile(prof.id);
+        await AppService.connect(prof.id);
       }
     } catch (err) {
       onNotify(String(err), "error");
     } finally {
-      setBusyAction(false);
+      setProfileBusy(prof.id, false);
     }
   };
 
-  const handleProfileSelect = async (id: string) => {
+  const handleDismissError = async (profId: string) => {
+    if (busyProfileIds[profId]) return;
+    setProfileBusy(profId, true);
     try {
-      await AppService.setActiveProfile(id);
+      await AppService.disconnect(profId);
     } catch (err) {
       onNotify(String(err), "error");
+    } finally {
+      setProfileBusy(profId, false);
     }
   };
 
-  const handleToggleSysproxy = async () => {
-    if (!sysproxy.supported || !isConnected) return;
+  const handleDisconnectAll = async () => {
+    if (disconnectingAll) return;
+    setDisconnectingAll(true);
     try {
-      await AppService.setSystemProxy(!sysproxy.enabled);
+      await AppService.disconnectAll();
+    } catch (err) {
+      onNotify(String(err), "error");
+    } finally {
+      setDisconnectingAll(false);
+    }
+  };
+
+  const sysproxyBoundToSelected =
+    sysproxy.enabled &&
+    selectedProfile &&
+    (sysproxy.profileId === selectedProfile.id ||
+      (!sysproxy.profileId && isConnected));
+
+  const sysproxyBoundToOther =
+    sysproxy.enabled &&
+    selectedProfile &&
+    Boolean(sysproxy.profileId) &&
+    sysproxy.profileId !== selectedProfile.id;
+
+  const handleToggleSysproxy = async () => {
+    if (!sysproxy.supported || !selectedProfile || !isConnected) return;
+    try {
+      if (sysproxyBoundToSelected) {
+        await AppService.setSystemProxy(selectedProfile.id, false);
+      } else {
+        await AppService.setSystemProxy(selectedProfile.id, true);
+      }
     } catch (err) {
       onNotify(String(err), "error");
     }
@@ -146,7 +309,140 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
   return (
     <div className="page-stack">
-      {/* Hero Connection Card */}
+      {/* Multi-Connection Overview List */}
+      {profiles.length > 0 && (
+        <div className="card">
+          <div className="card-header" style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <h3 className="card-title">
+                <Layers size={16} color="var(--accent)" />
+                {dict.connect.connectionsTitle}
+              </h3>
+              {activeCount > 0 && (
+                <span className="badge badge-success">
+                  {fmt(dict.connect.activeCount, { n: activeCount })}
+                </span>
+              )}
+            </div>
+            {activeCount > 0 && (
+              <button
+                type="button"
+                className="btn btn-sm btn-danger"
+                disabled={disconnectingAll}
+                onClick={handleDisconnectAll}
+              >
+                <PowerOff size={13} />
+                {dict.connect.disconnectAll}
+              </button>
+            )}
+          </div>
+
+          <div className="conn-list">
+            {profiles.map((p) => {
+              const s = sessionsByProfile[p.id];
+              const st: State = s?.state || "idle";
+              const rowConnected = st === "connected";
+              const rowBusy = isBusyState(st);
+              const rowError = st === "error";
+              const rowSelected = selectedProfile?.id === p.id;
+              const rowTraffic = trafficByProfile[p.id] || s?.traffic;
+
+              const dotCls = rowConnected
+                ? "connected"
+                : rowBusy
+                  ? "busy"
+                  : rowError
+                    ? "error"
+                    : "";
+
+              return (
+                <div
+                  key={p.id}
+                  className={`conn-row ${rowSelected ? "selected" : ""} ${rowConnected ? "connected" : ""}`}
+                  onClick={() => onSelectProfile(p.id)}
+                >
+                  <div className="conn-row-left">
+                    <span className={`status-dot ${dotCls}`} />
+                    <div className="conn-row-info">
+                      <div className="conn-row-title">
+                        <span className="conn-row-name">{p.name}</span>
+                        <span
+                          className={`badge ${p.protocol === "atrust" ? "badge-accent" : "badge-neutral"}`}
+                        >
+                          {p.protocol === "atrust" ? "aTrust" : "EasyConnect"}
+                        </span>
+                        {p.tunMode && (
+                          <span className="badge badge-success">Split-TUN</span>
+                        )}
+                        {rowConnected && (
+                          <span className="badge badge-success mono">
+                            <Clock size={11} />
+                            {formatDuration(s?.connectedAt, nowMs)}
+                          </span>
+                        )}
+                        {rowBusy && (
+                          <span className="badge badge-warning">
+                            {dict.state[st]}
+                          </span>
+                        )}
+                        {rowError && (
+                          <span className="badge badge-danger">
+                            {dict.state.error}
+                          </span>
+                        )}
+                        {sysproxy.enabled && sysproxy.profileId === p.id && (
+                          <span className="badge badge-accent">
+                            {dict.connect.sysproxyTitle}
+                          </span>
+                        )}
+                      </div>
+                      <div className="conn-row-meta mono">
+                        <span>
+                          {p.serverAddress}:{p.serverPort}
+                        </span>
+                        {s?.virtualIp && <span>IP {s.virtualIp}</span>}
+                        {rowConnected && s?.socksAddr && (
+                          <span>SOCKS5 {s.socksAddr}</span>
+                        )}
+                        {rowConnected && s?.httpAddr && (
+                          <span>HTTP {s.httpAddr}</span>
+                        )}
+                        {rowConnected && rowTraffic && (
+                          <span>
+                            ↑{formatRate(rowTraffic.rateSent)} ↓
+                            {formatRate(rowTraffic.rateRecv)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    className="conn-row-actions"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      className={`btn btn-sm ${rowConnected || rowBusy ? "btn-danger" : "btn-primary"}`}
+                      disabled={!!busyProfileIds[p.id]}
+                      onClick={() => handleToggleProfile(p)}
+                    >
+                      <Power size={13} />
+                      {rowConnected
+                        ? dict.connect.disconnect
+                        : rowBusy
+                          ? dict.connect.cancel
+                          : dict.connect.connect}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Selected Connection Hero Card */}
       <div className="card hero-card">
         <div className={`power-btn-wrap ${visualStateClass}`}>
           <div className="power-ring" />
@@ -154,8 +450,11 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
             type="button"
             className={`power-btn ${visualStateClass}`}
             title={powerTooltip}
-            disabled={busyAction || (!isConnected && !isBusy && !activeProfile)}
-            onClick={handleToggleConnect}
+            disabled={
+              !selectedProfile ||
+              !!busyProfileIds[selectedProfile.id]
+            }
+            onClick={() => selectedProfile && handleToggleProfile(selectedProfile)}
           >
             <Power size={34} strokeWidth={2.2} />
           </button>
@@ -163,7 +462,11 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
         <div className="hero-info">
           <div className="hero-status-line">
-            <h2 className="hero-state-text">{dict.state[status.state]}</h2>
+            <h2 className="hero-state-text">
+              {selectedProfile
+                ? `${selectedProfile.name} · ${dict.state[status.state]}`
+                : dict.state[status.state]}
+            </h2>
             {isConnected && (
               <span className="badge badge-success mono">
                 <Clock size={12} />
@@ -208,25 +511,15 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
           ) : (
             <>
               <div className="hero-profile-bar">
-                <select
-                  className="select"
-                  style={{ maxWidth: 320 }}
-                  disabled={isConnected || isBusy}
-                  value={activeProfile?.id || ""}
-                  onChange={(e) => handleProfileSelect(e.target.value)}
-                >
-                  {profiles.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.protocol === "atrust" ? "aTrust" : "EasyConnect"} ·{" "}
-                      {p.serverAddress}:{p.serverPort})
-                    </option>
-                  ))}
-                </select>
                 <button
                   type="button"
                   className={`btn ${isConnected || isBusy ? "btn-danger" : "btn-primary"}`}
-                  disabled={busyAction}
-                  onClick={handleToggleConnect}
+                  disabled={
+                    !selectedProfile || !!busyProfileIds[selectedProfile.id]
+                  }
+                  onClick={() =>
+                    selectedProfile && handleToggleProfile(selectedProfile)
+                  }
                 >
                   {isConnected
                     ? dict.connect.clickToDisconnect
@@ -234,6 +527,16 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
                       ? dict.connect.clickToCancel
                       : dict.connect.clickToConnect}
                 </button>
+                {isError && selectedProfile && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={!!busyProfileIds[selectedProfile.id]}
+                    onClick={() => handleDismissError(selectedProfile.id)}
+                  >
+                    {dict.connect.dismissError}
+                  </button>
+                )}
               </div>
 
               <div className="hero-meta-row">
@@ -241,7 +544,7 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
                   <Shield size={13} />
                   {dict.connect.protocol}:{" "}
                   <strong>
-                    {(status.protocol || activeProfile?.protocol) === "atrust"
+                    {(status.protocol || selectedProfile?.protocol) === "atrust"
                       ? "aTrust"
                       : "EasyConnect"}
                   </strong>
@@ -249,8 +552,8 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
                 <span className="hero-meta-chip mono">
                   <Server size={13} />
                   {status.server ||
-                    (activeProfile
-                      ? `${activeProfile.serverAddress}:${activeProfile.serverPort}`
+                    (selectedProfile
+                      ? `${selectedProfile.serverAddress}:${selectedProfile.serverPort}`
                       : "—")}
                 </span>
                 {status.virtualIp && (
@@ -259,7 +562,7 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
                     {dict.connect.virtualIp}: <strong>{status.virtualIp}</strong>
                   </span>
                 )}
-                {activeProfile?.tunMode && (
+                {selectedProfile?.tunMode && (
                   <span className="badge badge-success">Split-TUN</span>
                 )}
               </div>
@@ -280,7 +583,15 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
       {/* System Proxy + Local Proxy Endpoints */}
       <div className="grid-2">
-        <div className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", gap: 14 }}>
+        <div
+          className="card"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "space-between",
+            gap: 14,
+          }}
+        >
           <div>
             <div className="card-header" style={{ marginBottom: 8 }}>
               <h3 className="card-title">
@@ -290,8 +601,8 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
               <button
                 type="button"
                 role="switch"
-                aria-checked={sysproxy.enabled}
-                className={`switch success ${sysproxy.enabled ? "checked" : ""}`}
+                aria-checked={!!sysproxyBoundToSelected}
+                className={`switch success ${sysproxyBoundToSelected ? "checked" : ""}`}
                 disabled={!sysproxy.supported || !isConnected}
                 onClick={handleToggleSysproxy}
               >
@@ -301,21 +612,40 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
             <p className="card-subtitle">{dict.connect.sysproxyDesc}</p>
           </div>
 
-          <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             {!sysproxy.supported ? (
               <div className="alert-banner alert-warning">
                 <AlertCircle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
                 <span>{sysproxy.message || dict.connect.sysproxyUnsupported}</span>
               </div>
+            ) : sysproxyBoundToOther ? (
+              <>
+                <span className="badge badge-warning">
+                  {fmt(dict.connect.sysproxyOnOther, {
+                    name: sysproxy.profileName || sysproxy.profileId || "",
+                  })}
+                </span>
+                {isConnected && (
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={handleToggleSysproxy}
+                  >
+                    {dict.connect.switchSysproxyHere}
+                  </button>
+                )}
+              </>
             ) : !isConnected ? (
               <span className="badge badge-neutral">
                 {dict.connect.sysproxyNeedConnect}
               </span>
             ) : (
               <span
-                className={`badge ${sysproxy.enabled ? "badge-success" : "badge-neutral"}`}
+                className={`badge ${sysproxyBoundToSelected ? "badge-success" : "badge-neutral"}`}
               >
-                {sysproxy.enabled ? dict.common.enabled : dict.common.disabled}
+                {sysproxyBoundToSelected
+                  ? dict.connect.sysproxyOnThis
+                  : dict.common.disabled}
               </span>
             )}
           </div>
@@ -334,8 +664,22 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
           <div className="proxy-row">
             <div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600 }}>
-                SOCKS5
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span>SOCKS5</span>
+                {socksAutoAssigned && (
+                  <span className="badge badge-accent">
+                    {dict.connect.portAutoAssigned}
+                  </span>
+                )}
               </div>
               <div className="mono selectable" style={{ fontWeight: 600 }}>
                 socks5://{socksDisplay}
@@ -353,8 +697,22 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
 
           <div className="proxy-row">
             <div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600 }}>
-                HTTP / HTTPS
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                <span>HTTP / HTTPS</span>
+                {httpAutoAssigned && (
+                  <span className="badge badge-accent">
+                    {dict.connect.portAutoAssigned}
+                  </span>
+                )}
               </div>
               <div className="mono selectable" style={{ fontWeight: 600 }}>
                 http://{httpDisplay}
@@ -391,12 +749,32 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
       {/* Live Traffic Card */}
       <div className="card">
         <div className="card-header">
-          <h3 className="card-title">
-            <Activity size={16} color="var(--accent)" />
-            {dict.connect.trafficTitle}
-          </h3>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <h3 className="card-title">
+              <Activity size={16} color="var(--accent)" />
+              {dict.connect.trafficTitle}
+            </h3>
+            {connectedCount > 1 && (
+              <div className="tabs">
+                <button
+                  type="button"
+                  className={`tab-btn ${trafficScope === "current" ? "active" : ""}`}
+                  onClick={() => setTrafficScope("current")}
+                >
+                  {dict.connect.trafficScopeCurrent}
+                </button>
+                <button
+                  type="button"
+                  className={`tab-btn ${trafficScope === "all" ? "active" : ""}`}
+                  onClick={() => setTrafficScope("all")}
+                >
+                  {dict.connect.trafficScopeAll} ({connectedCount})
+                </button>
+              </div>
+            )}
+          </div>
           <span className="badge badge-neutral mono">
-            {dict.connect.activeConns}: {traffic.activeConns}
+            {dict.connect.activeConns}: {displayedTraffic.activeConns}
           </span>
         </div>
 
@@ -406,27 +784,35 @@ export const ConnectView: React.FC<ConnectViewProps> = ({
               <ArrowUp size={13} color="var(--accent)" />
               {dict.connect.upload}
             </span>
-            <span className="stat-value mono">{formatRate(traffic.rateSent)}</span>
+            <span className="stat-value mono">
+              {formatRate(displayedTraffic.rateSent)}
+            </span>
           </div>
           <div className="stat-tile">
             <span className="stat-label">
               <ArrowDown size={13} color="var(--success)" />
               {dict.connect.download}
             </span>
-            <span className="stat-value mono">{formatRate(traffic.rateRecv)}</span>
+            <span className="stat-value mono">
+              {formatRate(displayedTraffic.rateRecv)}
+            </span>
           </div>
           <div className="stat-tile">
             <span className="stat-label">{dict.connect.totalSent}</span>
-            <span className="stat-value mono">{formatBytes(traffic.bytesSent)}</span>
+            <span className="stat-value mono">
+              {formatBytes(displayedTraffic.bytesSent)}
+            </span>
           </div>
           <div className="stat-tile">
             <span className="stat-label">{dict.connect.totalRecv}</span>
-            <span className="stat-value mono">{formatBytes(traffic.bytesRecv)}</span>
+            <span className="stat-value mono">
+              {formatBytes(displayedTraffic.bytesRecv)}
+            </span>
           </div>
         </div>
 
         <TrafficSparkline
-          samples={samples}
+          samples={displayedSamples}
           upLabel={dict.connect.upload}
           downLabel={dict.connect.download}
         />

@@ -39,9 +39,9 @@ type UpdateCheckResult struct {
 }
 
 // AppService is the sole mygo-bound service exposed to the TypeScript frontend.
-// It depends strictly on core.Engine and never imports upstream zju-connect.
+// It depends strictly on core.SessionManager / core.Engine and never imports upstream zju-connect.
 type AppService struct {
-	engine   core.Engine
+	manager  *core.SessionManager
 	store    *Store
 	sysProxy *sysproxy.Manager
 	extLogin *ExternalLoginManager
@@ -56,29 +56,29 @@ type AppService struct {
 	stop  chan struct{}
 }
 
-// NewAppService wires AppService to the core engine, profile store, and sysproxy manager.
+// NewAppService wires AppService to the core session manager, profile store, and sysproxy manager.
 // Arguments may be nil before App.WhenReady (e.g. during `mygo generate`) and
 // populated via initRuntime once ready.
-func NewAppService(engine core.Engine, store *Store, sp *sysproxy.Manager) *AppService {
+func NewAppService(manager *core.SessionManager, store *Store, sp *sysproxy.Manager) *AppService {
 	s := &AppService{
 		extLogin: NewExternalLoginManager(),
 		logs:     make([]core.LogEntry, 0, 256),
 		stop:     make(chan struct{}),
 	}
-	if engine != nil && store != nil && sp != nil {
-		s.initRuntime(engine, store, sp)
+	if manager != nil && store != nil && sp != nil {
+		s.initRuntime(manager, store, sp)
 	}
 	return s
 }
 
-func (s *AppService) initRuntime(engine core.Engine, store *Store, sp *sysproxy.Manager) {
+func (s *AppService) initRuntime(manager *core.SessionManager, store *Store, sp *sysproxy.Manager) {
 	s.mu.Lock()
-	s.engine = engine
+	s.manager = manager
 	s.store = store
 	s.sysProxy = sp
 	s.mu.Unlock()
-	if engine != nil {
-		evCh, unsub := engine.Subscribe()
+	if manager != nil {
+		evCh, unsub := manager.Subscribe()
 		s.unsub = unsub
 		go s.forwardEvents(evCh)
 	}
@@ -134,12 +134,17 @@ func (s *AppService) forwardEvents(evCh <-chan core.Event) {
 			switch ev.Type {
 			case core.EventState:
 				if ev.Status != nil {
-					// If tunnel went idle or errored while sysproxy is enabled, automatically restore system proxy.
-					if (ev.Status.State == core.StateIdle || ev.Status.State == core.StateError) && s.sysProxy.State().Enabled {
-						_ = s.sysProxy.Disable()
-						EventSystemProxyChanged.Broadcast(s.sysProxy.State())
+					// If the session currently providing OS system proxy went idle/errored,
+					// automatically restore OS system proxy settings.
+					if ev.Status.State == core.StateIdle || ev.Status.State == core.StateError {
+						spState := s.sysProxy.State()
+						if spState.Enabled && (spState.ProfileID == "" || spState.ProfileID == ev.Status.ProfileID) {
+							_ = s.sysProxy.Disable()
+							EventSystemProxyChanged.Broadcast(s.sysProxy.State())
+						}
 					}
 					EventStateChanged.Broadcast(*ev.Status)
+					EventSessionsChanged.Broadcast(s.manager.Statuses())
 					s.refreshTray()
 				}
 			case core.EventChallenge:
@@ -155,8 +160,9 @@ func (s *AppService) forwardEvents(evCh <-chan core.Event) {
 					s.refreshTray()
 				}
 			case core.EventChallengeResolved:
-				s.extLogin.Close()
+				s.extLogin.CloseChallenge(ev.ChallengeID)
 				EventChallengeResolved.Broadcast(ev.ChallengeID)
+				EventSessionsChanged.Broadcast(s.manager.Statuses())
 				s.refreshTray()
 			case core.EventLog:
 				if ev.Log != nil {
@@ -196,19 +202,30 @@ func (s *AppService) GetAppInfo() AppInfo {
 	}
 }
 
-// GetStatus returns the current VPN connection status snapshot.
+// GetStatus returns the primary VPN connection status snapshot.
 func (s *AppService) GetStatus() core.StatusSnapshot {
-	return s.engine.Status()
+	return s.manager.Status("")
 }
 
-// GetResources returns the server-pushed IP ranges, domains, and DNS overrides.
-func (s *AppService) GetResources() core.ResourceSnapshot {
-	return s.engine.Resources()
+// GetSessions returns status snapshots for all active, connecting, or errored VPN sessions.
+func (s *AppService) GetSessions() []core.StatusSnapshot {
+	return s.manager.Statuses()
+}
+
+// GetResources returns server-pushed resources for profileID (or the primary connected session when empty).
+func (s *AppService) GetResources(profileID string) core.ResourceSnapshot {
+	return s.manager.Resources(profileID)
+}
+
+// GetAllResources returns server-pushed resources for every currently connected session.
+func (s *AppService) GetAllResources() []core.ResourceSnapshot {
+	return s.manager.AllResources()
 }
 
 // CheckRoute evaluates whether target (URL, domain, or IP:port) routes through VPN.
-func (s *AppService) CheckRoute(target string, defaultPort int, network string) core.RouteCheckResult {
-	return s.engine.CheckRoute(target, defaultPort, network)
+// Pass an empty profileID to check across all connected sessions.
+func (s *AppService) CheckRoute(profileID string, target string, defaultPort int, network string) core.RouteCheckResult {
+	return s.manager.CheckRoute(profileID, target, defaultPort, network)
 }
 
 // ListProfiles returns all saved connection profiles (with secrets stripped) and the active profile ID.
@@ -227,8 +244,16 @@ func (s *AppService) SaveProfile(input SaveProfileInput) (core.Profile, error) {
 	return saved, nil
 }
 
-// DeleteProfile deletes a connection profile and removes its secrets from the OS keychain.
+// DeleteProfile deletes a connection profile (disconnecting it first if active) and removes its secrets.
 func (s *AppService) DeleteProfile(id string) error {
+	if s.manager != nil {
+		st := s.manager.Status(id)
+		if st.State != core.StateIdle {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			_ = s.Disconnect(ctx, id)
+			cancel()
+		}
+	}
 	if err := s.store.DeleteProfile(id); err != nil {
 		return err
 	}
@@ -293,6 +318,7 @@ func (s *AppService) ImportTOMLFile(ctx context.Context) (*core.Profile, error) 
 }
 
 // Connect starts a VPN session using profileID (or the active profile when empty).
+// Multiple different profiles can be connected simultaneously.
 func (s *AppService) Connect(ctx context.Context, profileID string) error {
 	if profileID == "" {
 		profileID = s.store.ActiveProfileID()
@@ -301,34 +327,61 @@ func (s *AppService) Connect(ctx context.Context, profileID string) error {
 		return errors.New("no connection profile selected; please create or import a profile first")
 	}
 	_ = s.store.SetActiveProfile(profileID)
+	EventProfilesChanged.Broadcast(s.store.ListProfiles())
 	profile, err := s.store.HydrateProfile(profileID)
 	if err != nil {
 		return err
 	}
-	return s.engine.Connect(ctx, profile)
+	err = s.manager.Connect(ctx, profile)
+	if err == nil {
+		EventSessionsChanged.Broadcast(s.manager.Statuses())
+		s.refreshTray()
+	}
+	return err
 }
 
-// Disconnect terminates the active VPN session and restores system proxy settings if active.
-func (s *AppService) Disconnect(ctx context.Context) error {
+// Disconnect terminates the VPN session for profileID (or all active sessions when profileID is empty).
+func (s *AppService) Disconnect(ctx context.Context, profileID string) error {
+	if profileID == "" {
+		return s.DisconnectAll(ctx)
+	}
+	st := s.manager.Status(profileID)
+	if st.ActiveChallenge != nil {
+		s.extLogin.CloseChallenge(st.ActiveChallenge.ID)
+	}
+	spState := s.sysProxy.State()
+	if spState.Enabled && (spState.ProfileID == "" || spState.ProfileID == profileID) {
+		_ = s.sysProxy.Disable()
+		EventSystemProxyChanged.Broadcast(s.sysProxy.State())
+	}
+	err := s.manager.Disconnect(ctx, profileID)
+	EventSessionsChanged.Broadcast(s.manager.Statuses())
+	s.refreshTray()
+	return err
+}
+
+// DisconnectAll terminates every active VPN session and restores system proxy settings.
+func (s *AppService) DisconnectAll(ctx context.Context) error {
 	s.extLogin.Close()
 	if s.sysProxy.State().Enabled {
 		_ = s.sysProxy.Disable()
 		EventSystemProxyChanged.Broadcast(s.sysProxy.State())
 	}
-	err := s.engine.Disconnect(ctx)
+	err := s.manager.DisconnectAll(ctx)
+	EventSessionsChanged.Broadcast(s.manager.Statuses())
 	s.refreshTray()
 	return err
 }
 
 // SubmitChallenge submits the user's answer for a pending interactive authentication challenge.
 func (s *AppService) SubmitChallenge(ctx context.Context, answer core.ChallengeAnswer) error {
-	return s.engine.SubmitChallenge(ctx, answer)
+	return s.manager.SubmitChallenge(ctx, answer)
 }
 
 // CancelChallenge cancels a pending interactive authentication challenge.
 func (s *AppService) CancelChallenge(ctx context.Context, challengeID string) error {
-	s.extLogin.Close()
-	return s.engine.CancelChallenge(ctx, challengeID)
+	s.extLogin.CloseChallenge(challengeID)
+	return s.manager.CancelChallenge(ctx, challengeID)
 }
 
 // OpenExternalLoginWindow opens a native WebView window for CAS/OAuth2 login with automatic callback interception.
@@ -338,7 +391,7 @@ func (s *AppService) OpenExternalLoginWindow(challengeID string, loginURL string
 	s.mu.RUnlock()
 
 	return s.extLogin.Open(parent, challengeID, kind, loginURL, func(callbackURL string) {
-		_ = s.engine.SubmitChallenge(context.Background(), core.ChallengeAnswer{
+		_ = s.manager.SubmitChallenge(context.Background(), core.ChallengeAnswer{
 			ID:          challengeID,
 			CallbackURL: callbackURL,
 		})
@@ -355,8 +408,9 @@ func (s *AppService) GetSystemProxyState() sysproxy.State {
 	return s.sysProxy.State()
 }
 
-// SetSystemProxy enables or disables the OS system proxy pointing to the active local proxy addresses.
-func (s *AppService) SetSystemProxy(enabled bool) (sysproxy.State, error) {
+// SetSystemProxy enables or disables the OS system proxy pointing to profileID's local proxy addresses
+// (or the first connected session when profileID is empty).
+func (s *AppService) SetSystemProxy(profileID string, enabled bool) (sysproxy.State, error) {
 	if !enabled {
 		err := s.sysProxy.Disable()
 		st := s.sysProxy.State()
@@ -365,12 +419,25 @@ func (s *AppService) SetSystemProxy(enabled bool) (sysproxy.State, error) {
 		return st, err
 	}
 
-	status := s.engine.Status()
+	var status core.StatusSnapshot
+	if profileID != "" {
+		status = s.manager.Status(profileID)
+	} else {
+		// Prefer the active profile if connected, otherwise fall back to any connected session.
+		if activeID := s.store.ActiveProfileID(); activeID != "" {
+			if st := s.manager.Status(activeID); st.State == core.StateConnected {
+				status = st
+			}
+		}
+		if status.State != core.StateConnected {
+			status = s.manager.Status("")
+		}
+	}
 	if status.State != core.StateConnected {
 		return s.sysProxy.State(), errors.New("connect to VPN before enabling system proxy")
 	}
 
-	err := s.sysProxy.Enable(status.HTTPAddr, status.SocksAddr)
+	err := s.sysProxy.EnableForProfile(status.ProfileID, status.ProfileName, status.HTTPAddr, status.SocksAddr)
 	st := s.sysProxy.State()
 	EventSystemProxyChanged.Broadcast(st)
 	s.refreshTray()

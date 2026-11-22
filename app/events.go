@@ -9,6 +9,7 @@ import (
 // Typed events pushed from Go to the frontend (picked up by `mygo generate`).
 var (
 	EventStateChanged       = mygo.NewEvent[core.StatusSnapshot]("vpn:state")
+	EventSessionsChanged    = mygo.NewEvent[[]core.StatusSnapshot]("vpn:sessions")
 	EventChallengeRequested = mygo.NewEvent[core.Challenge]("vpn:challenge")
 	EventChallengeResolved  = mygo.NewEvent[string]("vpn:challenge-resolved")
 	EventLogReceived        = mygo.NewEvent[core.LogEntry]("vpn:log")

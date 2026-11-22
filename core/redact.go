@@ -48,7 +48,13 @@ func SanitizeLogs(entries []LogEntry, extraSecrets ...string) string {
 		b.WriteString(ts)
 		b.WriteString(" [")
 		b.WriteString(lvl)
-		b.WriteString("] [")
+		b.WriteString("]")
+		if e.ProfileName != "" {
+			b.WriteString(" [")
+			b.WriteString(e.ProfileName)
+			b.WriteString("]")
+		}
+		b.WriteString(" [")
 		b.WriteString(src)
 		b.WriteString("] ")
 		b.WriteString(msg)

@@ -27,7 +27,7 @@ func Run() error {
 	var (
 		store    *Store
 		sp       *sysproxy.Manager
-		engine   core.Engine
+		manager  *core.SessionManager
 		mainWin  *mygo.Window
 		tray     *TrayController
 		quitting bool
@@ -45,11 +45,11 @@ func Run() error {
 		if sp != nil {
 			_ = sp.Disable()
 		}
-		if engine != nil {
+		if manager != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = engine.Disconnect(ctx)
+			_ = manager.DisconnectAll(ctx)
 			cancel()
-			_ = engine.Close()
+			_ = manager.Close()
 		}
 		svc.close()
 		if tray != nil {
@@ -67,12 +67,15 @@ func Run() error {
 		}
 		sp = sysproxy.NewManager(store.Dir())
 
-		// Use Scheme B (self-spawned `--core` subprocess) so disconnect is 100% leak-free
-		// and upstream crashes (log.Fatalf / os.Exit) can never bring down the GUI.
-		engine = rpc.NewSubprocessEngine(rpc.SubprocessOptions{
-			WorkerArgs: []string{"--core"},
+		// Use Scheme B (self-spawned `--core` subprocess per connection) so each
+		// simultaneous VPN session is 100% isolated, leak-free on disconnect,
+		// and protected against upstream crashes.
+		manager = core.NewSessionManager(func() core.Engine {
+			return rpc.NewSubprocessEngine(rpc.SubprocessOptions{
+				WorkerArgs: []string{"--core"},
+			})
 		})
-		svc.initRuntime(engine, store, sp)
+		svc.initRuntime(manager, store, sp)
 
 		// Ensure SIGINT/SIGTERM also restores system proxy cleanly.
 		sigCh := make(chan os.Signal, 1)
